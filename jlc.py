@@ -613,7 +613,7 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
 
     try:
         # 1. 登录流程
-        log(f"账号 {account_index} - 正在调用 登录(AliV3) 脚本进行登录...")
+        log(f"账号 {account_index} - 正在打开嘉立创登录页面...")
         
         # 确保 AliV3 已加载
         if AliV3 is None:
@@ -621,71 +621,146 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
              result['oshwhub_status'] = '依赖缺失'
              return result
 
-        auth_code = None
+        # 1. 打开登录页面以初始化 JS 环境
+        login_page_url = "https://passport.jlc.com/login?appId=JLC_OSHWHUB&redirectUrl=https%3A%2F%2Foshwhub.com%2Fsign_in&backCode=1"
+        driver.get(login_page_url)
+        
+        # 等待页面 JS 加载 (SM2Utils)
+        try:
+             WebDriverWait(driver, 15).until(lambda d: d.execute_script("return typeof SM2Utils !== 'undefined'"))
+        except:
+             log(f"账号 {account_index} - ⚠ 页面 JS 加载超时，可能影响加密")
+
+        # 2. 调用 AliV3 获取 ticket
+        log(f"账号 {account_index} - 正在获取 Captcha Ticket...")
+        captcha_ticket = None
         ali_output = ""
         
-        # 捕获 stdout
         f = io.StringIO()
         with redirect_stdout(f):
             try:
-                # 实例化并运行
                 ali = AliV3()
                 ali.main(username=username, password=password)
             except Exception as e:
                 print(f"Error executing AliV3: {e}")
-        
         ali_output = f.getvalue()
         
-        # 解析输出
+        # 从输出中解析 ticket
         lines = ali_output.split('\n')
         for line in lines:
             line = line.strip()
-            if not line:
-                continue
+            if not line: continue
             try:
                 data = json.loads(line)
-                
-                # 检查是否包含 authCode
                 if isinstance(data, dict) and data.get('success'):
                     inner_data = data.get('data')
-                    if isinstance(inner_data, dict) and 'authCode' in inner_data:
-                        auth_code = inner_data['authCode']
-                        log(f"账号 {account_index} - ✅ 成功获取 authCode: {auth_code}")
-                
-                # 检查是否包含错误码 10208
-                if isinstance(data, dict) and data.get('code') == 10208:
-                    msg = data.get('message', '账号或密码不正确')
-                    log(f"账号 {account_index} - ❌ 检测到账号或密码错误，跳过此账号 ({msg})")
-                    result['password_error'] = True
-                    result['oshwhub_status'] = '密码错误'
-                    return result
-                    
+                    if isinstance(inner_data, dict) and 'captchaTicket' in inner_data:
+                        captcha_ticket = inner_data['captchaTicket']
+                        log(f"账号 {account_index} - ✅ 成功获取 Ticket")
+                        break
             except json.JSONDecodeError:
                 continue
+
+        if not captcha_ticket:
+            log("❌ 未能获取 Captcha Ticket，AliV3 输出:")
+            log(ali_output)
+            result['oshwhub_status'] = 'Ticket获取失败'
+            return result
+
+        # 3. 使用页面 JS 加密账号密码
+        log(f"账号 {account_index} - 正在加密登录凭据...")
+        pub_key = "043b2759c70dab4718520cad55ac41eea6f8922c1309afb788f7578b3e585b167811023effefc2b9193cd93ae9c9a2a864e5fffbf7517c679f40cbf4c4630aa28c"
         
-        # 判断登录结果
+        enc_script = """
+        var pubKey = arguments[0];
+        var user = arguments[1];
+        var pwd = arguments[2];
+        if(typeof SM2Utils !== 'undefined') {
+            return {
+                u: SM2Utils.encs(pubKey, user),
+                p: SM2Utils.encs(pubKey, pwd)
+            };
+        } else { return null; }
+        """
+        
+        enc_data = driver.execute_script(enc_script, pub_key, username, password)
+        
+        if not enc_data:
+            log(f"账号 {account_index} - ❌ 加密失败，SM2Utils 未加载")
+            result['oshwhub_status'] = '加密失败'
+            return result
+
+        # 4. 组装请求并发送
+        log(f"账号 {account_index} - 正在发送登录请求...")
+        
+        # 复制 Selenium Cookies 到 Requests
+        session = requests.Session()
+        selenium_cookies = driver.get_cookies()
+        for cookie in selenium_cookies:
+            session.cookies.set(cookie['name'], cookie['value'])
+            
+        req_headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': driver.execute_script("return navigator.userAgent;"),
+            'Origin': 'https://passport.jlc.com',
+            'Referer': login_page_url,
+            'Accept': 'application/json, text/plain, */*'
+        }
+        
+        payload = {
+            "username": enc_data['u'],
+            "password": enc_data['p'],
+            "isAutoLogin": True,
+            "captchaTicket": captcha_ticket
+        }
+        
+        api_url = 'https://passport.jlc.com/api/cas/login/with-password'
+        
+        try:
+            resp = session.post(api_url, json=payload, headers=req_headers)
+            resp_json = resp.json()
+        except Exception as e:
+            log(f"账号 {account_index} - ❌ 登录请求异常: {e}")
+            result['oshwhub_status'] = '请求异常'
+            return result
+
+        # 5. 处理响应
+        auth_code = None
+        
+        if resp_json.get('success'):
+            inner_data = resp_json.get('data', {})
+            if 'authCode' in inner_data:
+                auth_code = inner_data['authCode']
+                log(f"账号 {account_index} - ✅ 登录接口请求成功，获取到 authCode")
+        elif resp_json.get('code') == 10208:
+            msg = resp_json.get('message', '账号或密码不正确')
+            log(f"账号 {account_index} - ❌ 账号或密码错误: {msg}")
+            result['password_error'] = True
+            result['oshwhub_status'] = '密码错误'
+            return result
+        else:
+            log(f"账号 {account_index} - ❌ 登录失败: {resp_json}")
+            result['oshwhub_status'] = '登录API失败'
+            return result
+
         if auth_code:
             # 拼接 URL 并跳转
-            login_url = f"https://oshwhub.com/sign_in?code={auth_code}"
-            log(f"账号 {account_index} - 正在使用 authCode 登录...")
-            driver.get(login_url)
+            final_login_url = f"https://oshwhub.com/sign_in?code={auth_code}"
+            log(f"账号 {account_index} - 正在跳转登录...")
+            driver.get(final_login_url)
             
-            # 等待登录成功 (通过检测URL或页面元素)
+            # 等待登录成功
             try:
-                # 等待页面加载且没有 error 提示，通常登录成功会跳转或停留在 oshwhub.com
                 WebDriverWait(driver, 20).until(
                     lambda d: "oshwhub.com" in d.current_url and "code=" not in d.current_url
                 )
                 log(f"账号 {account_index} - ✅ 登录跳转成功")
             except Exception:
                 log(f"账号 {account_index} - ⚠ 登录跳转超时或未检测到预期URL，尝试继续后续流程...")
-
         else:
-            # 既没有 authCode 也没有密码错误信息
-            log("❌登录脚本异常：")
-            log(ali_output)  # 输出 AliV3 的全部内容
-            result['oshwhub_status'] = '登录脚本异常'
-            return result # 返回失败，触发外部重试
+             log(f"账号 {account_index} - ❌ 未获取到 authCode")
+             result['oshwhub_status'] = '无AuthCode'
+             return result
 
         # 3. 获取用户昵称
         time.sleep(2) # 稍作等待确保 Cookie 生效
