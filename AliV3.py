@@ -208,70 +208,6 @@ class AliV3:
         print(data)
         return data
 
-    def _get_dynamic_cookies_and_headers(self):
-        """动态从目标网站获取cookies和headers"""
-        try:
-            # 访问登录页面获取初始cookies
-            login_url = 'https://passport.jlc.com/window/login?appId=JLC_PORTAL_PC&redirectUrl=https%3A%2F%2Fwww.jlc.com%2F'
-            response = requests.get(login_url, timeout=10)
-            
-            # 获取cookies
-            cookies = {}
-            for cookie in response.cookies:
-                cookies[cookie.name] = cookie.value
-            
-            # 如果cookies为空，设置一些默认值
-            if not cookies:
-                cookies = {
-                    'device_id': 'c7d0a5f4b554477fae0e1ba29f84fb63',
-                    'HWWAFSESID': 'bcd7d8b4f625fb57ac',
-                    'HWWAFSESTIME': str(int(time.time() * 1000)),
-                }
-            
-            # 动态构建headers
-            headers = {
-                'accept': 'application/json, text/plain, */*',
-                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-                'cache-control': 'no-cache, no-store, must-revalidate',
-                'content-type': 'application/json',
-                'origin': 'https://passport.jlc.com',
-                'referer': 'https://passport.jlc.com/window/login?appId=JLC_PORTAL_PC&redirectUrl=https%3A%2F%2Fwww.jlc.com%2F',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
-                'sec-ch-ua': '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-origin',
-                'secretkey': '35616236663038352d643366382d343131662d396239622d366439643132653639373764',
-                'x-jlc-clientuuid': '445de653-7a24-4242-88dd-0878479726aa-' + str(int(time.time() * 1000)),
-            }
-            
-            return cookies, headers
-            
-        except Exception as e:
-            print(f"获取动态cookies和headers失败: {e}")
-            # 返回默认值作为降级策略
-            cookies = {
-                'device_id': 'c7d0a5f4b554477fae0e1ba29f84fb63',
-                'HWWAFSESID': 'bcd7d8b4f625fb57ac',
-                'HWWAFSESTIME': str(int(time.time() * 1000)),
-            }
-            
-            headers = {
-                'accept': 'application/json, text/plain, */*',
-                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-                'cache-control': 'no-cache, no-store, must-revalidate',
-                'content-type': 'application/json',
-                'origin': 'https://passport.jlc.com',
-                'referer': 'https://passport.jlc.com/window/login?appId=JLC_PORTAL_PC&redirectUrl=https%3A%2F%2Fwww.jlc.com%2F',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
-                'secretkey': '35616236663038352d643366382d343131662d396239622d366439643132653639373764',
-                'x-jlc-clientuuid': '445de653-7a24-4242-88dd-0878479726aa-' + str(int(time.time() * 1000)),
-            }
-            
-            return cookies, headers
-
     def Sumbit_All(self):
         args = MatchArgs(self.StaticPath)
         if args is None:
@@ -291,10 +227,28 @@ class AliV3:
         print('deviceToekn', deviceToekn)
         print('_data', _data)
 
-        # 动态获取cookies和headers
-        cookies, headers = self._get_dynamic_cookies_and_headers()
-        print(f"动态获取的cookies: {cookies}")
-        print(f"动态获取的headers keys: {list(headers.keys())}")
+        cookies = {
+            'device_id': 'c7d0a5f4b554477fae0e1ba29f84fb63',
+            'HWWAFSESID': 'bcd7d8b4f625fb57ac',
+            'HWWAFSESTIME': '1766299533105',
+            'Qs_lvt_290854': '1766237893%2C1766299553',
+            'Qs_pv_290854': '2499244294467079700%2C852781256760664000',
+            '__sameSiteCheck__': '1',
+            '_c_WBKFRo': '03ctatXDH7wXL1GIRpFWI9AUfuGhSVMzyOf5q8oX',
+            '_nb_ioWEgULi': '',
+        }
+
+        headers = {
+            'accept': 'application/json, text/plain, */*',
+            'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+            'cache-control': 'no-cache, no-store, must-revalidate',
+            'content-type': 'application/json',
+            'origin': 'https://passport.jlc.com',
+            'referer': 'https://passport.jlc.com/window/login?appId=JLC_PORTAL_PC&redirectUrl=https%3A%2F%2Fwww.jlc.com%2F',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+            'secretkey': '35616236663038352d643366382d343131662d396239622d366439643132653639373764',
+            'x-jlc-clientuuid': '445de653-7a24-4242-88dd-0878479726aa-1766237894098',
+        }
 
         captcha_verify_param = {
             "sceneId": "6mw4mrmg",
@@ -318,46 +272,16 @@ class AliV3:
             json=json_data
         )
 
-        print(f"响应状态码: {response.status_code}")
-        print(f"响应内容: {response.text}")
+        print("响应状态码:", response.status_code)
+        print("响应内容:", response.text)
         
         try:
             self.captchaTicket = response.json()['data']['captchaTicket']
+            print(f"成功获取captchaTicket: {self.captchaTicket}")
         except Exception as e:
             print("Failed to get captchaTicket:", e)
-
-    def Login(self, username, password):
-        if not self.captchaTicket:
-            print("Skipping login: No captchaTicket acquired.")
-            return
-
-        # 动态获取cookies和headers
-        cookies, base_headers = self._get_dynamic_cookies_and_headers()
-        
-        # 构建登录所需的完整headers
-        headers = base_headers.copy()
-        headers.update({
-            'expires': '0',
-            'jsec-x-df': '04facb30801ada1e5ac7e8e29a7a14ed3ed9f4d8d0d634be4167f0c3b8e0acd770e9835306f7557c2266e5f09cc238b5f730a9ea894a339fea3f5d30c5a581b1713d1dcc2f120fd08b53bff1ddcd0a8586fbd67569e7b8131154bd30d94ffcf4b29f9817748f50924b77e74992fa36f41a4150ba174639da7edb1e62c1e7c96e57fef81696c58bda62ffdd0f91',
-            'pragma': 'no-cache',
-            'priority': 'u=1, i',
-            'support-cookie-samesite': 'true',
-            'x-jlc-clientinfo': 'eyJjbGllbnRUeXBlIjoiUEMtV0VCIiwib3NOYW1lIjoiV2luZG93cyIsIm9zVmVyc2lvbiI6IjEwIiwiYnJvd3Nlck5hbWUiOiJFZGdlIiwiYnJvd3NlclZlcnNpb24iOiIxNDMuMC4wLjAiLCJicm93c2VyRW5naW5lIjoiQmxpbmsiLCJicm93c2VyRW5naW5lVmVyc2lvbiI6IjE0My4wLjAuMCIsInNjcmVlbldpZHRoIjoxNzA3LCJzY3JlZW5IZWlnaHQiOjEwNjcsImRwciI6MS41LCJjb2xvckRlcHRoIjoyNCwicGl4ZWxEZXB0aCI6MjQsImdwdVZlbmRvciI6Ikdvb2dsZSBJbmMuIChOVklESUEpIiwiZ3B1UmVuZGVyZXIiOiJBTkdMRSAoTlZJRElBLCBOVklESUEgR2VGb3JjZSBSVFggNTA2MCBMYXB0b3AgR1BVICgweDAwMDAyRDU5KSBEaXJlY3QzRDExIHZzXzVfMCBwc181XzAsIEQzRDExKSIsImNwdUFyY2hpdGVjdHVyZSI6ImFtZDY0IiwiaGFyZHdhcmVDb25jdXJyZW5jeSI6MjQsImxhbmd1YWdlIjoiemgtQ04iLCJ0aW1lWm9uZSI6IkFzaWEvU2hhbmdoYWkiLCJ0aW1lem9uZU9mZnNldCI6LTQ4MCwibmV0VHlwZSI6IjRnIn0=',
-        })
-
-        json_data = {
-            'username': username,
-            'password': password,
-            'isAutoLogin': True,
-            'captchaTicket': self.captchaTicket,
-        }
-
-        response = requests.post('https://passport.jlc.com/api/cas/login/with-password', 
-                                cookies=cookies,
-                                headers=headers, 
-                                json=json_data)
-
-        print(f"登录响应: {response.text}")
+            
+        return self.captchaTicket
 
     def test(self):
         pass
@@ -374,13 +298,9 @@ class AliV3:
         self.GetLog2()
         self.GetLog3()
         
-        res = self.Sumbit_All()
-        
-        # 传递加密后的账号密码进行登录
-        enc_username = pwdEncrypt(username)
-        enc_password = pwdEncrypt(password)
-        self.Login(enc_username, enc_password)
-        return res
+        # 获取并返回 captchaTicket
+        captchaTicket = self.Sumbit_All()
+        return captchaTicket
 
 
 if __name__ == '__main__':
@@ -390,7 +310,8 @@ if __name__ == '__main__':
     if len(sys.argv) >= 3:
         user_arg = sys.argv[1]
         pass_arg = sys.argv[2]
-        ali.main(user_arg, pass_arg)
+        ticket = ali.main(user_arg, pass_arg)
+        print(f"最终获取的captchaTicket: {ticket}")
     else:
         print("用法: python AliV3.py <username> <password>")
         print("示例: python AliV3.py 13800138000 MyPassword123")
