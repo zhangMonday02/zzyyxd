@@ -12,7 +12,7 @@ GLOBAL_PUBLIC_KEY = "043b2759c70dab4718520cad55ac41eea6f8922c1309afb788f7578b3e5
 MAIN_URL = "https://www.jlc.com"
 PASSPORT_URL = "https://passport.jlc.com/window/login?appId=JLC_PORTAL_PC&redirectUrl=https%3A%2F%2Fwww.jlc.com%2F"
 
-# 定义输出顺序 (完全按照你的要求)
+# 定义输出顺序
 COOKIE_ORDER = [
     'device_id', 'HWWAFSESID', 'HWWAFSESTIME', 'Qs_lvt_290854', 'Qs_pv_290854',
     '__sameSiteCheck__', '_c_WBKFRo', '_nb_ioWEgULi', 'JSESSIONID', 'lsId'
@@ -26,7 +26,7 @@ HEADER_ORDER = [
     'sec-fetch-mode', 'sec-fetch-site', 'support-cookie-samesite'
 ]
 
-# 静态补全数据 (防止Selenium未生成某些统计类Cookie导致缺失)
+# 静态补全数据
 STATIC_COOKIES_FALLBACK = {
     'device_id': uuid.uuid4().hex,
     'Qs_lvt_290854': f'{int(time.time())}',
@@ -50,7 +50,6 @@ def init_driver():
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # 保持 UA 一致
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0')
     
     # 防检测
@@ -65,16 +64,13 @@ def init_driver():
     return driver
 
 def get_waf_cookies_logic(driver):
-    """
-    执行特定的 WAF Cookie 获取流程
-    """
+    """执行特定的 WAF Cookie 获取流程"""
     log(f"正在访问主页: {MAIN_URL}")
     driver.get(MAIN_URL)
     time.sleep(2)
 
     waf_keys = ['HWWAFSESID', 'HWWAFSESTIME']
     
-    # 获取当前 Cookies
     def get_current_cookies():
         return {c['name']: c['value'] for c in driver.get_cookies()}
 
@@ -84,18 +80,15 @@ def get_waf_cookies_logic(driver):
     if has_waf:
         log(">>> 状态: Cookie 中已存在 WAF 值")
         log(">>> 操作: 手动删除 HWWAFSESID 和 HWWAFSESTIME，然后刷新")
-        
         driver.delete_cookie('HWWAFSESID')
         driver.delete_cookie('HWWAFSESTIME')
         time.sleep(0.5)
-        
         driver.refresh()
         log(">>> 页面已刷新，等待响应头 Set-Cookie 生效...")
-        time.sleep(3) # 等待网络请求完成和Cookie写入
+        time.sleep(3)
     else:
         log(">>> 状态: Cookie 中不存在 WAF 值")
         log(">>> 操作: 尝试刷新页面 (最多3次)")
-        
         for i in range(3):
             log(f"    正在进行第 {i+1} 次刷新...")
             driver.refresh()
@@ -107,7 +100,6 @@ def get_waf_cookies_logic(driver):
             else:
                 log("    未获取到，继续重试...")
 
-    # 最终检查
     final_cookies = get_current_cookies()
     waf_result = {k: final_cookies.get(k) for k in waf_keys if final_cookies.get(k)}
     
@@ -119,20 +111,15 @@ def get_waf_cookies_logic(driver):
     return waf_result
 
 def get_passport_params(driver):
-    """
-    跳转到 Passport 获取密钥和加密签名
-    """
+    """跳转到 Passport 获取密钥和加密签名"""
     log(f"正在跳转至登录页: {PASSPORT_URL}")
     driver.get(PASSPORT_URL)
     
     log("等待握手接口及 JS 资源加载 (5秒)...")
     time.sleep(5)
 
-    # 1. 提取 SecretKey
     secret_key = ""
     try:
-        # 嘉立创将密钥存储在 LocalStorage 的 keyPair 字段
-        # 格式 {"keyId": "...", "publicHexKey": "...", ...}
         key_pair_str = driver.execute_script("return localStorage.getItem('keyPair');")
         if key_pair_str:
             key_pair = json.loads(key_pair_str)
@@ -143,18 +130,14 @@ def get_passport_params(driver):
     except Exception as e:
         log(f"获取 SecretKey 异常: {e}")
 
-    # 2. 生成 Client UUID
     timestamp = int(time.time() * 1000)
     client_uuid = f"{uuid.uuid4()}-{timestamp}"
     log(f"生成 ClientUUID: {client_uuid}")
 
-    # 3. 调用浏览器 SM2Utils 加密
     jsec_val = ""
     try:
-        # 检查函数是否存在
         is_ready = driver.execute_script("return typeof window.SM2Utils !== 'undefined' && typeof window.SM2Utils.encs === 'function';")
         if is_ready:
-            # cipherMode = 1 (C1C3C2)
             js_code = f"return window.SM2Utils.encs('{GLOBAL_PUBLIC_KEY}', '{client_uuid}', 1);"
             jsec_val = driver.execute_script(js_code)
             log("成功调用 SM2Utils.encs 生成 jsec-x-df")
@@ -167,66 +150,52 @@ def get_passport_params(driver):
 
 def format_output(final_cookies, final_headers):
     """
-    严格按照要求格式化输出
+    格式化输出：顶格输出，不带外部缩进，防止 exec() 解析错误
     """
     output = []
     
-    # ---------------- 输出 Cookies ----------------
-    output.append("        cookies = {")
-    
-    # 1. 先按指定顺序输出
+    # Cookies
+    output.append("cookies = {")
+    # 1. 优先输出顺序列表中的
     for key in COOKIE_ORDER:
         if key in final_cookies:
-            output.append(f"            '{key}': '{final_cookies[key]}',")
-    
-    # 2. 输出剩余未在顺序表中的 Cookie (如果有)
+            output.append(f"    '{key}': '{final_cookies[key]}',")
+    # 2. 输出剩余的
     for key, val in final_cookies.items():
         if key not in COOKIE_ORDER:
-            output.append(f"            '{key}': '{val}',")
-            
-    output.append("        }")
-    output.append("") # 空行
+            output.append(f"    '{key}': '{val}',")
+    output.append("}")
+    output.append("")
 
-    # ---------------- 输出 Headers ----------------
-    output.append("        headers = {")
-    
-    # 1. 先按指定顺序输出
+    # Headers
+    output.append("headers = {")
+    # 1. 优先输出顺序列表中的
     for key in HEADER_ORDER:
         if key in final_headers:
-            output.append(f"            '{key}': '{final_headers[key]}',")
-            
-    # 2. 输出剩余 Header
+            output.append(f"    '{key}': '{final_headers[key]}',")
+    # 2. 输出剩余的
     for key, val in final_headers.items():
         if key not in HEADER_ORDER:
-            output.append(f"            '{key}': '{val}',")
-            
-    output.append("        }")
+            output.append(f"    '{key}': '{val}',")
+    output.append("}")
     
     return "\n".join(output)
 
 def main():
     driver = init_driver()
     try:
-        # 步骤 1: 获取 WAF Cookie
         get_waf_cookies_logic(driver)
-        
-        # 步骤 2: 获取登录参数
         secret_key, client_uuid, jsec_val = get_passport_params(driver)
 
         if not secret_key or not jsec_val:
             log("获取关键参数失败，无法继续")
             return
 
-        # 步骤 3: 整理数据
-        
         # 整理 Cookies
         selenium_cookies = {c['name']: c['value'] for c in driver.get_cookies()}
-        
-        # 合并 Static Fallback (如果在 Selenium 中没获取到，使用静态替补)
         final_cookies = STATIC_COOKIES_FALLBACK.copy()
         final_cookies.update(selenium_cookies)
         
-        # 获取 UA
         user_agent = driver.execute_script("return navigator.userAgent;")
 
         # 整理 Headers
@@ -241,7 +210,6 @@ def main():
             'secretkey': secret_key,
             'x-jlc-clientuuid': client_uuid,
             'jsec-x-df': jsec_val,
-            # 固定值 PC-WEB Base64
             'x-jlc-clientinfo': 'eyJjbGllbnRUeXBlIjoiUEMtV0VCIiwib3NOYW1lIjoiV2luZG93cyIsIm9zVmVyc2lvbiI6IjEwIiwiYnJvd3Nlck5hbWUiOiJFZGdlIiwiYnJvd3NlclZlcnNpb24iOiIxNDMuMC4wLjAiLCJicm93c2VyRW5naW5lIjoiQmxpbmsiLCJicm93c2VyRW5naW5lVmVyc2lvbiI6IjE0My4wLjAuMCIsInNjcmVlbldpZHRoIjoxNzA3LCJzY3JlZW5IZWlnaHQiOjEwNjcsImRwciI6MS41LCJjb2xvckRlcHRoIjoyNCwicGl4ZWxEZXB0aCI6MjQsImdwdVZlbmRvciI6Ikdvb2dsZSBJbmMuIChOVklESUEpIiwiZ3B1UmVuZGVyZXIiOiJBTkdMRSAoTlZJRElBLCBOVklESUEgR2VGb3JjZSBSVFggNTA2MCBMYXB0b3AgR1BVICgweDAwMDAyRDU5KSBEaXJlY3QzRDExIHZzXzVfMCBwc181XzAsIEQzRDExKSIsImNwdUFyY2hpdGVjdHVyZSI6ImFtZDY0IiwiaGFyZHdhcmVDb25jdXJyZW5jeSI6MjQsImxhbmd1YWdlIjoiemgtQ04iLCJ0aW1lWm9uZSI6IkFzaWEvU2hhbmdoYWkiLCJ0aW1lem9uZU9mZnNldCI6LTQ4MCwibmV0VHlwZSI6IjRnIn0=',
             'expires': '0',
             'pragma': 'no-cache',
@@ -255,9 +223,8 @@ def main():
             'support-cookie-samesite': 'true'
         }
 
-        # 步骤 4: 打印结果到 stdout (供 AliV3.py 读取)
+        # 输出结果 (stdout)
         print(format_output(final_cookies, final_headers))
-        
         log("数据已输出到 stdout")
 
     except Exception as e:
