@@ -87,45 +87,75 @@ def with_retry(func, max_retries=5, delay=1):
         return None
     return wrapper
 
-def wait_for_network_headers(driver, timeout=20):
+def trigger_interactions(driver):
+    """在页面上进行点击或刷新，以触发网络请求"""
+    try:
+        # 尝试点击"我的"或"个人中心"
+        nav_selectors = [
+            "//div[contains(text(), '我的')]",
+            "//div[contains(text(), '个人中心')]",
+            "//div[contains(text(), '用户中心')]",
+            "//span[contains(text(), '我的')]",
+        ]
+        
+        clicked = False
+        for selector in nav_selectors:
+            try:
+                elems = driver.find_elements(By.XPATH, selector)
+                for elem in elems:
+                    if elem.is_displayed():
+                        driver.execute_script("arguments[0].click();", elem)
+                        clicked = True
+                        break
+                if clicked:
+                    break
+            except:
+                continue
+        
+        if not clicked:
+            # 如果没找到按钮，就滚动一下
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(0.5)
+            driver.execute_script("window.scrollTo(0, 0);")
+    except:
+        pass
+
+def wait_for_network_headers(driver, timeout=30):
     """
-    等待并从 m.jlc.com 的任意网络请求头中提取 X-JLC-AccessToken 和 secretkey
-    会自动过滤掉 'NONE', 'UNDEFINED' 等无效值
+    循环等待并从 m.jlc.com 的请求头中提取 X-JLC-AccessToken。
+    如果抓不到，会尝试刷新页面或点击按钮来触发新请求。
     """
     log("正在监听网络请求，等待捕获有效的 X-JLC-AccessToken...")
     start_time = time.time()
+    last_interaction_time = 0
     
     found_token = None
     found_secret = None
     
     while time.time() - start_time < timeout:
+        # 1. 检查日志
         try:
-            # 获取性能日志
             logs = driver.get_log('performance')
-            
             for entry in logs:
                 try:
                     message = json.loads(entry['message'])
                     message_type = message.get('message', {}).get('method', '')
                     
-                    # 监听请求发送事件 (request headers 在这里)
                     if message_type == 'Network.requestWillBeSent':
                         params = message.get('message', {}).get('params', {})
                         request = params.get('request', {})
                         url = request.get('url', '')
                         
-                        # 只要是 m.jlc.com 下的请求
                         if 'm.jlc.com' in url:
                             headers = request.get('headers', {})
-                            
                             for key, value in headers.items():
                                 key_lower = key.lower()
                                 
                                 # 提取 Token
                                 if key_lower == 'x-jlc-accesstoken':
-                                    # 过滤逻辑：排除 None/Empty, 排除 "NONE", "UNDEFINED", "NULL"
                                     if value and isinstance(value, str):
                                         clean_val = value.strip().upper()
+                                        # 过滤无效值
                                         if clean_val not in ['NONE', 'UNDEFINED', 'NULL', ''] and len(value) > 10:
                                             if not found_token:
                                                 found_token = value
@@ -139,23 +169,35 @@ def wait_for_network_headers(driver, timeout=20):
                                             if not found_secret:
                                                 found_secret = value
                                                 log(f"✅ 成功从请求头捕获 SecretKey: {found_secret[:20]}...")
-
-                except Exception:
+                except:
                     continue
-            
-            # 如果两个都找到了，直接返回
-            if found_token and found_secret:
-                return found_token, found_secret
-            
-            # 如果只找到了 Token，继续找一会 SecretKey
-            if found_token and (time.time() - start_time > 8): # 找到Token后最多再等8秒找Secret
-                 return found_token, found_secret
-
-            time.sleep(0.5)
-            
         except Exception as e:
-            log(f"监听网络日志出错: {e}")
-            time.sleep(1)
+            log(f"读取日志异常: {e}")
+
+        # 2. 判断是否完成
+        if found_token and found_secret:
+            return found_token, found_secret
+        
+        # 如果只拿到 Token，再多等一小会儿找 SecretKey
+        if found_token and (time.time() - start_time > 10):
+            return found_token, found_secret
+
+        # 3. 如果还没找到，且距离上次交互超过了 4 秒，执行一次交互（刷新或点击）
+        current_time = time.time()
+        if current_time - last_interaction_time > 4:
+            log("⏳ 尚未捕获到有效 Token，尝试刷新页面或点击以触发新请求...")
+            try:
+                # 每隔一次交互，交替使用刷新和点击
+                if int(current_time) % 2 == 0:
+                    trigger_interactions(driver)
+                else:
+                    driver.refresh()
+                    WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            except:
+                pass
+            last_interaction_time = current_time
+            
+        time.sleep(0.5)
             
     if not found_token:
         log("❌ 等待超时，未能在请求头中抓取到有效的 X-JLC-AccessToken")
@@ -267,11 +309,6 @@ class JLCClient:
             if attempt < max_retries - 1:
                 try:
                     self.driver.get("https://m.jlc.com/")
-                    self.driver.refresh()
-                    WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(1 + random.uniform(0, 1))
-                    navigate_and_interact_m_jlc(self.driver, self.account_index)
-                    
                     # 重新从网络捕获 token
                     access_token, secretkey = wait_for_network_headers(self.driver)
                     
@@ -410,41 +447,6 @@ class JLCClient:
         self.calculate_jindou_difference()
         
         return True
-
-def navigate_and_interact_m_jlc(driver, account_index):
-    """在 m.jlc.com 进行导航和交互以触发网络请求"""
-    log(f"账号 {account_index} - 在 m.jlc.com 进行交互操作...")
-    
-    try:
-        WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        driver.execute_script("window.scrollTo(0, 300);")
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-        nav_selectors = [
-            "//div[contains(text(), '我的')]",
-            "//div[contains(text(), '个人中心')]",
-            "//div[contains(text(), '用户中心')]",
-            "//a[contains(@href, 'user')]",
-            "//a[contains(@href, 'center')]",
-        ]
-        
-        for selector in nav_selectors:
-            try:
-                element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, selector)))
-                element.click()
-                log(f"账号 {account_index} - 点击导航元素: {selector}")
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                break
-            except:
-                continue
-        
-        driver.execute_script("window.scrollTo(0, 500);")
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        driver.refresh()
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-    except Exception as e:
-        log(f"账号 {account_index} - 交互操作出错: {e}")
 
 def is_sunday():
     """检查今天是否是周日"""
@@ -783,13 +785,13 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
 
         # 9. 金豆签到流程
         log(f"账号 {account_index} - 开始金豆签到流程...")
+        
+        # 访问 m.jlc.com
         driver.get("https://m.jlc.com/")
         log(f"账号 {account_index} - 已访问 m.jlc.com，等待页面加载...")
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         
-        navigate_and_interact_m_jlc(driver, account_index)
-        
-        # 改用新的监听网络请求的方式获取 token 和 secretkey
+        # 尝试捕获 Token
         access_token, secretkey = wait_for_network_headers(driver)
         
         result['token_extracted'] = bool(access_token)
