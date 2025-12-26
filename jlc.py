@@ -87,13 +87,13 @@ def with_retry(func, max_retries=5, delay=1):
         return None
     return wrapper
 
-def wait_for_network_credentials(driver, account_index, timeout=25):
+def wait_for_network_headers(driver, timeout=20):
     """
-    等待 api/integrated/secret/update 请求，并从请求头中提取 X-JLC-AccessToken 和 secretkey
+    等待并从 m.jlc.com 的任意网络请求头中提取 X-JLC-AccessToken 和 secretkey
     """
-    log(f"账号 {account_index} - ⏳ 正在等待 token 更新请求 (api/integrated/secret/update)...")
-    
+    log("正在监听网络请求，等待捕获 X-JLC-AccessToken...")
     start_time = time.time()
+    
     found_token = None
     found_secret = None
     
@@ -105,42 +105,53 @@ def wait_for_network_credentials(driver, account_index, timeout=25):
             for entry in logs:
                 try:
                     message = json.loads(entry['message'])
-                    method = message.get('message', {}).get('method')
+                    message_type = message.get('message', {}).get('method', '')
                     
-                    if method == 'Network.requestWillBeSent':
+                    # 监听请求发送事件 (request headers 在这里)
+                    if message_type == 'Network.requestWillBeSent':
                         params = message.get('message', {}).get('params', {})
                         request = params.get('request', {})
                         url = request.get('url', '')
                         
-                        # 检查是否是目标 URL
-                        if 'api/integrated/secret/update' in url:
+                        # 只要是 m.jlc.com 下的请求
+                        if 'm.jlc.com' in url:
                             headers = request.get('headers', {})
                             
-                            # 遍历 Header 寻找 Token 和 SecretKey (忽略大小写)
+                            # 尝试提取 Token (不区分大小写)
+                            # 通常是 x-jlc-accesstoken
                             for key, value in headers.items():
-                                k_lower = key.lower()
-                                if k_lower == 'x-jlc-accesstoken':
-                                    found_token = value
-                                elif k_lower == 'secretkey':
-                                    found_secret = value
+                                key_lower = key.lower()
+                                if key_lower == 'x-jlc-accesstoken':
+                                    if value and not found_token:
+                                        found_token = value
+                                        log(f"✅ 成功从请求头捕获 Token: {found_token[:20]}...")
                                 
-                            if found_token:
-                                log(f"✅ 账号 {account_index} - 成功捕获更新请求，提取到 Token")
-                                if found_secret:
-                                    log(f"✅ 账号 {account_index} - 同时提取到 SecretKey")
-                                return found_token, found_secret
+                                if key_lower == 'secretkey':
+                                    if value and not found_secret:
+                                        found_secret = value
+                                        log(f"✅ 成功从请求头捕获 SecretKey: {found_secret[:20]}...")
+
                 except Exception:
                     continue
             
-            # 如果没找到，稍微等待一下再检查新的日志
-            time.sleep(1)
+            # 如果两个都找到了，直接返回
+            if found_token and found_secret:
+                return found_token, found_secret
+            
+            # 如果只找到了 Token，继续找一会 SecretKey，或者超时返回
+            if found_token and (time.time() - start_time > 5): # 找到Token后最多再等5秒找Secret
+                 return found_token, found_secret
+
+            time.sleep(0.5)
             
         except Exception as e:
-            log(f"账号 {account_index} - ⚠ 监听网络请求时出错: {e}")
+            log(f"监听网络日志出错: {e}")
             time.sleep(1)
-
-    log(f"❌ 账号 {account_index} - 等待 Token 更新请求超时")
-    return None, None
+            
+    if not found_token:
+        log("❌ 等待超时，未能在请求头中抓取到 X-JLC-AccessToken")
+    
+    return found_token, found_secret
 
 def get_oshwhub_points(driver, account_index):
     """获取开源平台积分数量"""
@@ -247,11 +258,18 @@ class JLCClient:
             if attempt < max_retries - 1:
                 try:
                     self.driver.get("https://m.jlc.com/")
-                    token, secret = wait_for_network_credentials(self.driver, self.account_index)
-                    if token:
-                        self.headers['x-jlc-accesstoken'] = token
-                    if secret:
-                        self.headers['secretkey'] = secret
+                    self.driver.refresh()
+                    WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                    time.sleep(1 + random.uniform(0, 1))
+                    navigate_and_interact_m_jlc(self.driver, self.account_index)
+                    
+                    # 重新从网络捕获 token
+                    access_token, secretkey = wait_for_network_headers(self.driver)
+                    
+                    if access_token:
+                        self.headers['x-jlc-accesstoken'] = access_token
+                    if secretkey:
+                        self.headers['secretkey'] = secretkey
                 except:
                     pass  # 静默继续
         
@@ -383,6 +401,41 @@ class JLCClient:
         self.calculate_jindou_difference()
         
         return True
+
+def navigate_and_interact_m_jlc(driver, account_index):
+    """在 m.jlc.com 进行导航和交互以触发网络请求"""
+    log(f"账号 {account_index} - 在 m.jlc.com 进行交互操作...")
+    
+    try:
+        WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        driver.execute_script("window.scrollTo(0, 300);")
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        
+        nav_selectors = [
+            "//div[contains(text(), '我的')]",
+            "//div[contains(text(), '个人中心')]",
+            "//div[contains(text(), '用户中心')]",
+            "//a[contains(@href, 'user')]",
+            "//a[contains(@href, 'center')]",
+        ]
+        
+        for selector in nav_selectors:
+            try:
+                element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, selector)))
+                element.click()
+                log(f"账号 {account_index} - 点击导航元素: {selector}")
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                break
+            except:
+                continue
+        
+        driver.execute_script("window.scrollTo(0, 500);")
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        driver.refresh()
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        
+    except Exception as e:
+        log(f"账号 {account_index} - 交互操作出错: {e}")
 
 def is_sunday():
     """检查今天是否是周日"""
@@ -725,14 +778,16 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
         log(f"账号 {account_index} - 已访问 m.jlc.com，等待页面加载...")
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         
-        # 替换为新的等待请求逻辑，不再交互，同时获取 token 和 secretkey
-        access_token, secretkey = wait_for_network_credentials(driver, account_index)
+        navigate_and_interact_m_jlc(driver, account_index)
+        
+        # 改用新的监听网络请求的方式获取 token 和 secretkey
+        access_token, secretkey = wait_for_network_headers(driver)
         
         result['token_extracted'] = bool(access_token)
         result['secretkey_extracted'] = bool(secretkey)
         
         if access_token and secretkey:
-            log(f"账号 {account_index} - ✅ 成功提取 token 和 secretkey")
+            log(f"账号 {account_index} - ✅ 成功从网络请求捕获 token 和 secretkey")
             
             jlc_client = JLCClient(access_token, secretkey, account_index, driver)
             jindou_success = jlc_client.execute_full_process()
@@ -750,8 +805,8 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             else:
                 log(f"账号 {account_index} - ❌ 金豆签到流程失败")
         else:
-            log(f"账号 {account_index} - ❌ 无法提取到 token 或 secretkey (超时)，跳过金豆签到")
-            result['jindou_status'] = 'Token提取超时'
+            log(f"账号 {account_index} - ❌ 无法从网络请求捕获到 token 或 secretkey，跳过金豆签到")
+            result['jindou_status'] = 'Token捕获失败'
 
     except Exception as e:
         log(f"账号 {account_index} - ❌ 程序执行错误: {e}")
