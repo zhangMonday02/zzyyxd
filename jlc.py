@@ -122,10 +122,10 @@ def trigger_interactions(driver):
 
 def wait_for_network_headers(driver, timeout=30):
     """
-    循环等待并从 m.jlc.com 的请求头中提取 X-JLC-AccessToken。
-    如果抓不到，会尝试刷新页面或点击按钮来触发新请求。
+    循环等待并从任意网络请求头或Cookie中提取 X-JLC-AccessToken。
+    不再限制 URL 必须包含 m.jlc.com，因为 API 可能在其他域名。
     """
-    log("正在监听网络请求，等待捕获有效的 X-JLC-AccessToken...")
+    log("正在监听网络请求/Cookie，等待捕获有效的 X-JLC-AccessToken...")
     start_time = time.time()
     last_interaction_time = 0
     
@@ -133,7 +133,22 @@ def wait_for_network_headers(driver, timeout=30):
     found_secret = None
     
     while time.time() - start_time < timeout:
-        # 1. 检查日志
+        # --- 策略1: 检查 Cookie (最快路径) ---
+        try:
+            cookies = driver.get_cookies()
+            for cookie in cookies:
+                name = cookie.get('name', '').lower()
+                value = cookie.get('value', '')
+                
+                if name == 'x-jlc-accesstoken':
+                    if value and value.upper() not in ['NONE', 'NULL', 'UNDEFINED'] and len(value) > 10:
+                        if not found_token:
+                            found_token = value
+                            log(f"✅ 成功从 Cookie 捕获 Token: {found_token[:20]}...")
+        except:
+            pass
+
+        # --- 策略2: 检查网络请求头 ---
         try:
             logs = driver.get_log('performance')
             for entry in logs:
@@ -144,37 +159,35 @@ def wait_for_network_headers(driver, timeout=30):
                     if message_type == 'Network.requestWillBeSent':
                         params = message.get('message', {}).get('params', {})
                         request = params.get('request', {})
-                        url = request.get('url', '')
+                        # 移除 URL 过滤，检查所有请求
+                        headers = request.get('headers', {})
                         
-                        if 'm.jlc.com' in url:
-                            headers = request.get('headers', {})
-                            for key, value in headers.items():
-                                key_lower = key.lower()
-                                
-                                # 提取 Token
-                                if key_lower == 'x-jlc-accesstoken':
-                                    if value and isinstance(value, str):
-                                        clean_val = value.strip().upper()
-                                        # 过滤无效值
-                                        if clean_val not in ['NONE', 'UNDEFINED', 'NULL', ''] and len(value) > 10:
-                                            if not found_token:
-                                                found_token = value
-                                                log(f"✅ 成功从请求头捕获 Token: {found_token[:20]}...")
-                                
-                                # 提取 SecretKey
-                                if key_lower == 'secretkey':
-                                    if value and isinstance(value, str):
-                                        clean_val = value.strip().upper()
-                                        if clean_val not in ['NONE', 'UNDEFINED', 'NULL', '']:
-                                            if not found_secret:
-                                                found_secret = value
-                                                log(f"✅ 成功从请求头捕获 SecretKey: {found_secret[:20]}...")
+                        for key, value in headers.items():
+                            key_lower = key.lower()
+                            
+                            # 提取 Token
+                            if key_lower == 'x-jlc-accesstoken':
+                                if value and isinstance(value, str):
+                                    clean_val = value.strip().upper()
+                                    if clean_val not in ['NONE', 'UNDEFINED', 'NULL', ''] and len(value) > 10:
+                                        if not found_token:
+                                            found_token = value
+                                            log(f"✅ 成功从请求头捕获 Token: {found_token[:20]}...")
+                            
+                            # 提取 SecretKey
+                            if key_lower == 'secretkey':
+                                if value and isinstance(value, str):
+                                    clean_val = value.strip().upper()
+                                    if clean_val not in ['NONE', 'UNDEFINED', 'NULL', '']:
+                                        if not found_secret:
+                                            found_secret = value
+                                            log(f"✅ 成功从请求头捕获 SecretKey: {found_secret[:20]}...")
                 except:
                     continue
         except Exception as e:
             log(f"读取日志异常: {e}")
 
-        # 2. 判断是否完成
+        # 判断是否完成
         if found_token and found_secret:
             return found_token, found_secret
         
@@ -182,12 +195,11 @@ def wait_for_network_headers(driver, timeout=30):
         if found_token and (time.time() - start_time > 10):
             return found_token, found_secret
 
-        # 3. 如果还没找到，且距离上次交互超过了 4 秒，执行一次交互（刷新或点击）
+        # 交互逻辑：如果还没找到，且距离上次交互超过了 4 秒
         current_time = time.time()
         if current_time - last_interaction_time > 4:
-            log("⏳ 尚未捕获到有效 Token，尝试刷新页面或点击以触发新请求...")
+            log("⏳ 尚未捕获到完整信息，尝试刷新页面或点击...")
             try:
-                # 每隔一次交互，交替使用刷新和点击
                 if int(current_time) % 2 == 0:
                     trigger_interactions(driver)
                 else:
@@ -200,7 +212,7 @@ def wait_for_network_headers(driver, timeout=30):
         time.sleep(0.5)
             
     if not found_token:
-        log("❌ 等待超时，未能在请求头中抓取到有效的 X-JLC-AccessToken")
+        log("❌ 等待超时，未能在请求头或Cookie中抓取到有效的 X-JLC-AccessToken")
     
     return found_token, found_secret
 
@@ -447,6 +459,24 @@ class JLCClient:
         self.calculate_jindou_difference()
         
         return True
+
+def navigate_and_interact_m_jlc(driver, account_index):
+    """在 m.jlc.com 进行导航和交互以触发网络请求"""
+    log(f"账号 {account_index} - 在 m.jlc.com 进行交互操作...")
+    
+    try:
+        WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        
+        # 直接访问个人中心页面，这通常会触发更完整的加载
+        driver.get("https://m.jlc.com/mapp/pages/my/index")
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        
+        driver.execute_script("window.scrollTo(0, 300);")
+        time.sleep(1)
+        driver.execute_script("window.scrollTo(0, 0);")
+        
+    except Exception as e:
+        log(f"账号 {account_index} - 交互操作出错: {e}")
 
 def is_sunday():
     """检查今天是否是周日"""
@@ -791,7 +821,9 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
         log(f"账号 {account_index} - 已访问 m.jlc.com，等待页面加载...")
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         
-        # 尝试捕获 Token
+        navigate_and_interact_m_jlc(driver, account_index)
+        
+        # 改用新的监听网络请求的方式获取 token 和 secretkey
         access_token, secretkey = wait_for_network_headers(driver)
         
         result['token_extracted'] = bool(access_token)
