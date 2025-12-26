@@ -4,7 +4,7 @@ import random
 import subprocess
 import time
 import sys
-import textwrap  # 新增引用，用于处理缩进
+import textwrap
 from functools import partial
 
 subprocess.Popen = partial(subprocess.Popen, encoding='utf-8', errors='ignore')
@@ -14,24 +14,7 @@ import execjs
 
 from Utils import MatchArgs, pwdEncrypt
 
-# ==============================================================================
-# 修复：注释掉导致报错的代理获取代码
-# 原代码在 import 时会请求 51daili.com 导致 ConnectionResetError
-# ==============================================================================
-# prox = requests.get(
-#     'http://bapi.51daili.com/getapi2?linePoolIndex=-1&packid=2&time=2&qty=1&port=1&format=txt&usertype=17&uid=55442').text
-#
-# print(prox)
-
-# prox = ''
-
-# proxy = {
-#     "https": "http://" + prox,
-#     "http": "http://" + prox,
-# }
 proxy = None
-# ==============================================================================
-
 
 class AliV3:
     def __init__(self):
@@ -294,16 +277,12 @@ class AliV3:
 
         import requests
 
-        # ======================================================================
-        # 修改：动态调用 getcookie.py 获取 cookies 和 headers
-        # ======================================================================
-        cookies = {}
-        headers = {}
+        cookies = None
+        headers = None
         
         try:
             print("正在调用 getcookie.py 获取动态 Cookies 和 Headers...")
             # 调用同目录下的 getcookie.py
-            # 使用 sys.executable 确保使用相同的 Python 解释器
             process = subprocess.Popen(
                 [sys.executable, 'getcookie.py'], 
                 stdout=subprocess.PIPE, 
@@ -313,7 +292,7 @@ class AliV3:
             
             if process.returncode == 0:
                 output_str = stdout  # 由于 Popen 有 encoding='utf-8'，stdout 已为 str
-                # 定位到 cookies = { 的位置，假设这是有效代码块的开始
+                # 定位到 cookies = { 的位置
                 start_marker = "cookies = {"
                 start_index = output_str.find(start_marker)
                 
@@ -321,24 +300,23 @@ class AliV3:
                     # 提取后续的代码部分
                     code_block = output_str[start_index:]
                     
-                    # 处理缩进问题 (getcookie.py 输出带有缩进)
-                    # 使用 textwrap.dedent 去除公共缩进，确保 exec 能正确解析
                     dedented_code = textwrap.dedent(code_block)
                     
                     # 在局部作用域中执行提取的代码
                     local_scope = {}
                     try:
                         exec(dedented_code, {}, local_scope)
-                        cookies = local_scope.get('cookies', {})
-                        headers = local_scope.get('headers', {})
+                        # 这里不提供默认值 {}，如果脚本中没有定义 cookies/headers，则为 None
+                        cookies = local_scope.get('cookies')
+                        headers = local_scope.get('headers')
                         print("成功获取动态 Cookies 和 Headers。")
                     except Exception as parse_error:
                         print(f"解析 getcookie.py 输出时出错: {parse_error}")
                         # 如果 dedent 失败，尝试直接执行（容错）
                         try:
                             exec(code_block, {}, local_scope)
-                            cookies = local_scope.get('cookies', {})
-                            headers = local_scope.get('headers', {})
+                            cookies = local_scope.get('cookies')
+                            headers = local_scope.get('headers')
                         except:
                             pass
                 else:
@@ -349,14 +327,10 @@ class AliV3:
         except Exception as e:
             print(f"动态获取 Cookies/Headers 发生异常: {e}")
 
-        # 如果获取失败，直接退出，不再使用默认值
-        if not cookies or not headers:
-            print("错误：Cookies 或 Headers 为空，退出程序。")
+        if cookies is None or headers is None:
+            print("错误：未能获取到 Cookies 或 Headers (值为 None)，退出程序。")
             sys.exit(1)
 
-        # ======================================================================
-        # 修改结束
-        # ======================================================================
 
         json_data = {
             'username': username,
