@@ -349,45 +349,11 @@ class AliV3:
         except Exception as e:
             print(f"动态获取 Cookies/Headers 发生异常: {e}")
 
-        # 如果获取失败，使用默认的硬编码值作为 fallback
+        # 如果获取失败，直接退出，不再使用默认值
         if not cookies or not headers:
-            print("警告：Cookies 或 Headers 为空，使用默认值。")
-            cookies = {
-                'JSESSIONID': '',
-                'device_id': 'c7d0a5f4b554477fae0e1ba29f84fb63',
-                'HWWAFSESID': 'bcd7d8b4f625fb57ac',
-                'HWWAFSESTIME': '1766299533105',
-                'Qs_lvt_290854': '1766237893%2C1766299553',
-                'Qs_pv_290854': '2499244294467079700%2C852781256760664000',
-                '__sameSiteCheck__': '1',
-                '_c_WBKFRo': '03ctatXDH7wXL1GIRpFWI9AUfuGhSVMzyOf5q8oX',
-                '_nb_ioWEgULi': '',
-                'lsId': 'f3e9184bbb4f40539702a58ec91a587a',
-            }
+            print("错误：Cookies 或 Headers 为空，退出程序。")
+            sys.exit(1)
 
-            headers = {
-                'accept': 'application/json, text/plain, */*',
-                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-                'cache-control': 'no-cache, no-store, must-revalidate',
-                'content-type': 'application/json',
-                'expires': '0',
-                'jsec-x-df': '04facb30801ada1e5ac7e8e29a7a14ed3ed9f4d8d0d634be4167f0c3b8e0acd770e9835306f7557c2266e5f09cc238b5f730a9ea894a339fea3f5d30c5a581b1713d1dcc2f120fd08b53bff1ddcd0a8586fbd67569e7b8131154bd30d94ffcf4b29f9817748f50924b77e74992fa36f41a4150ba174639da7edb1e62c1e7c96e57fef81696c58bda62ffdd0f91',
-                'origin': 'https://passport.jlc.com',
-                'pragma': 'no-cache',
-                'priority': 'u=1, i',
-                'referer': 'https://passport.jlc.com/window/login?appId=JLC_PORTAL_PC&redirectUrl=https%3A%2F%2Fwww.jlc.com%2F',
-                'sec-ch-ua': '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-origin',
-                'secretkey': '35616236663038352d643366382d343131662d396239622d366439643132653639373764',
-                'support-cookie-samesite': 'true',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
-                'x-jlc-clientinfo': 'eyJjbGllbnRUeXBlIjoiUEMtV0VCIiwib3NOYW1lIjoiV2luZG93cyIsIm9zVmVyc2lvbiI6IjEwIiwiYnJvd3Nlck5hbWUiOiJFZGdlIiwiYnJvd3NlclZlcnNpb24iOiIxNDMuMC4wLjAiLCJicm93c2VyRW5naW5lIjoiQmxpbmsiLCJicm93c2VyRW5naW5lVmVyc2lvbiI6IjE0My4wLjAuMCIsInNjcmVlbldpZHRoIjoxNzA3LCJzY3JlZW5IZWlnaHQiOjEwNjcsImRwciI6MS41LCJjb2xvckRlcHRoIjoyNCwicGl4ZWxEZXB0aCI6MjQsImdwdVZlbmRvciI6Ikdvb2dsZSBJbmMuIChOVklESUEpIiwiZ3B1UmVuZGVyZXIiOiJBTkdMRSAoTlZJRElBLCBOVklESUEgR2VGb3JjZSBSVFggNTA2MCBMYXB0b3AgR1BVICgweDAwMDAyRDU5KSBEaXJlY3QzRDExIHZzXzVfMCBwc181XzAsIEQzRDExKSIsImNwdUFyY2hpdGVjdHVyZSI6ImFtZDY0IiwiaGFyZHdhcmVDb25jdXJyZW5jeSI6MjQsImxhbmd1YWdlIjoiemgtQ04iLCJ0aW1lWm9uZSI6IkFzaWEvU2hhbmdoYWkiLCJ0aW1lem9uZU9mZnNldCI6LTQ4MCwibmV0VHlwZSI6IjRnIn0=',
-                'x-jlc-clientuuid': '445de653-7a24-4242-88dd-0878479726aa-1766237894098',
-            }
         # ======================================================================
         # 修改结束
         # ======================================================================
