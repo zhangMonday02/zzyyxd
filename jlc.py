@@ -510,35 +510,114 @@ def extract_token_from_local(driver):
         pass
     return None
 
-def parse_logs_for_credentials(logs):
-    """解析网络日志提取 token 和 secretkey"""
+def parse_logs_for_debug(driver, logs, account_index):
+    """
+    调试模式：详细打印网络请求信息，并同时尝试提取 Token
+    """
     token = None
     secret = None
+    
+    log(f"---- 🛠️ 账号 {account_index} 调试：网络日志分析 (Total: {len(logs)}) ----")
     
     for entry in logs:
         try:
             message = json.loads(entry['message'])
             method = message.get('message', {}).get('method', '')
             params = message.get('message', {}).get('params', {})
-
-            headers = {}
+            
+            # 请求信息
             if method == 'Network.requestWillBeSent':
-                headers = params.get('request', {}).get('headers', {})
+                req_url = params.get('request', {}).get('url', '')
+                # 只打印相关域名的请求，避免日志爆炸
+                if 'jlc.com' in req_url or 'oshwhub.com' in req_url:
+                    headers = params.get('request', {}).get('headers', {})
+                    post_data = params.get('request', {}).get('postData', 'N/A')
+                    
+                    log(f"➡️ [REQ] {req_url}")
+                    log(f"   Headers: {json.dumps(headers, ensure_ascii=False)}")
+                    if post_data != 'N/A':
+                        log(f"   Body: {post_data[:500]}...") # 截断打印
+                    
+                    # 检查请求头中的 Token
+                    for k, v in headers.items():
+                        if k.lower() == 'x-jlc-accesstoken' and v and v != "NONE" and len(v)>5:
+                            token = v
+                            log(f"   ✅ Found Token in Req Headers: {token[:10]}...")
+                        if k.lower() == 'secretkey' and v and len(v)>5:
+                            secret = v
+                            log(f"   ✅ Found SecretKey in Req Headers: {secret[:10]}...")
+
+            # 响应信息
             elif method == 'Network.responseReceived':
-                headers = params.get('response', {}).get('requestHeaders', {})
-            
-            # 遍历 headers 查找 (忽略大小写)
-            for k, v in headers.items():
-                k_lower = k.lower()
-                if k_lower == 'x-jlc-accesstoken':
-                    if v and v != "NONE" and len(v) > 5:
-                        token = v
-                elif k_lower == 'secretkey':
-                    if v and len(v) > 5:
-                        secret = v
-        except:
+                resp_url = params.get('response', {}).get('url', '')
+                if 'jlc.com' in resp_url or 'oshwhub.com' in resp_url:
+                    status = params.get('response', {}).get('status', 0)
+                    headers = params.get('response', {}).get('requestHeaders', {}) # 注意这里通常是 requestHeaders
+                    # 获取响应内容需要 extra CDP command，这里只打印状态
+                    log(f"⬅️ [RESP] {status} {resp_url}")
+                    
+                    # 尝试获取响应体 (仅对少量关键接口尝试，防止阻塞)
+                    if "getCustomerIntegral" in resp_url or "selectPersonalInfo" in resp_url:
+                        request_id = params.get('requestId')
+                        try:
+                            body_resp = driver.execute_cdp_cmd('Network.getResponseBody', {'requestId': request_id})
+                            log(f"   Response Body: {body_resp.get('body', '')[:500]}...")
+                        except:
+                            log(f"   (Failed to get Response Body)")
+
+                    # 检查响应对应的请求头中的 Token (有时 Network.responseReceived 包含 requestHeaders)
+                    if headers:
+                        for k, v in headers.items():
+                            if k.lower() == 'x-jlc-accesstoken' and v and v != "NONE" and len(v)>5:
+                                token = v
+                            if k.lower() == 'secretkey' and v and len(v)>5:
+                                secret = v
+        except Exception as e:
             continue
-            
+    
+    log(f"---- 🛠️ 账号 {account_index} 调试结束 ----")
+    return token, secret
+
+def perform_deep_debug(driver, account_index):
+    """
+    执行深度调试：输出 HTML, LocalStorage 和 详细网络日志
+    同时返回从日志中发现的 token/secret 以防丢失
+    """
+    log(f"---- 🛠️ 账号 {account_index} 深度调试开始 (10s snapshot) ----")
+    
+    # 1. HTML Snapshot
+    try:
+        html = driver.page_source
+        title = driver.title
+        url = driver.current_url
+        log(f"📄 页面标题: {title}")
+        log(f"🔗 当前URL: {url}")
+        log(f"📝 HTML摘要 (前1000字): {html[:1000]}...")
+        if "passport" in url or "login" in url:
+            log("⚠ 警告：当前似乎在登录页，可能已重定向退出！")
+    except Exception as e:
+        log(f"❌ 获取HTML失败: {e}")
+
+    # 2. LocalStorage Snapshot
+    try:
+        ls = driver.execute_script("return window.localStorage;")
+        log(f"📦 LocalStorage 全部内容: {json.dumps(ls, ensure_ascii=False)}")
+        if 'X-JLC-AccessToken' in ls:
+            log(f"   ✅ LocalStorage 中存在 X-JLC-AccessToken: {ls['X-JLC-AccessToken'][:20]}...")
+        else:
+            log(f"   ❌ LocalStorage 中未找到 X-JLC-AccessToken")
+    except Exception as e:
+        log(f"❌ 获取LocalStorage失败: {e}")
+
+    # 3. Network Logs Dump & Analysis
+    token = None
+    secret = None
+    try:
+        logs = driver.get_log('performance') # 这会消费日志！
+        token, secret = parse_logs_for_debug(driver, logs, account_index)
+    except Exception as e:
+        log(f"❌ 获取网络日志失败: {e}")
+        
     return token, secret
 
 def wait_for_credentials(driver, account_index, timeout=20):
@@ -561,7 +640,6 @@ def wait_for_credentials(driver, account_index, timeout=20):
             log(f"账号 {account_index} - ⚠ URL发生变化: {current_url}")
             last_url = current_url
             
-            # 如果被重定向到登录页，直接失败
             if "passport.jlc.com" in current_url or "/login" in current_url:
                 log(f"账号 {account_index} - ❌ 检测到重定向至登录页，AuthCode 可能失效")
                 return None, None
@@ -575,7 +653,8 @@ def wait_for_credentials(driver, account_index, timeout=20):
         # 2. 读取网络日志 (累积式提取)
         try:
             logs = driver.get_log('performance')
-            t_net, s_net = parse_logs_for_credentials(logs)
+            # 使用简化的解析逻辑，非调试模式下不打印详情
+            t_net, s_net = parse_logs_for_credentials(logs) # 复用之前的简单解析函数
             
             if not access_token and t_net:
                 access_token = t_net
@@ -595,6 +674,35 @@ def wait_for_credentials(driver, account_index, timeout=20):
         time.sleep(1)
         
     return access_token, secretkey
+
+def parse_logs_for_credentials(logs):
+    """(原有的简单解析) 解析网络日志提取 token 和 secretkey"""
+    token = None
+    secret = None
+    
+    for entry in logs:
+        try:
+            message = json.loads(entry['message'])
+            method = message.get('message', {}).get('method', '')
+            params = message.get('message', {}).get('params', {})
+
+            headers = {}
+            if method == 'Network.requestWillBeSent':
+                headers = params.get('request', {}).get('headers', {})
+            elif method == 'Network.responseReceived':
+                headers = params.get('response', {}).get('requestHeaders', {})
+            
+            for k, v in headers.items():
+                k_lower = k.lower()
+                if k_lower == 'x-jlc-accesstoken':
+                    if v and v != "NONE" and len(v) > 5:
+                        token = v
+                elif k_lower == 'secretkey':
+                    if v and len(v) > 5:
+                        secret = v
+        except:
+            continue
+    return token, secret
 
 def sign_in_account(username, password, account_index, total_accounts, retry_count=0):
     """为单个账号执行完整的签到流程"""
@@ -786,12 +894,23 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             log(f"账号 {account_index} - 正在携带 authCode 访问 m.jlc.com 个人中心...")
             driver.get(target_url)
             
-            # 等待页面加载
-            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            # --- 调试模式开始 ---
+            log(f"账号 {account_index} - 等待 10 秒后输出页面调试信息...")
+            time.sleep(10)
             
-            # 使用新的等待提取函数
-            log(f"账号 {account_index} - 正在提取凭证(Token/SecretKey)...")
-            access_token, secretkey = wait_for_credentials(driver, account_index, timeout=20)
+            # 执行深度调试 (同时提取凭证以防日志被消费)
+            debug_token, debug_secret = perform_deep_debug(driver, account_index)
+            
+            # 继续正常的提取流程 (传入已发现的凭证)
+            access_token = debug_token
+            secretkey = debug_secret
+            
+            if not access_token or not secretkey:
+                log(f"账号 {account_index} - 调试阶段未提取全凭证，继续等待...")
+                # 继续等待剩余时间 (timeout - 10s)
+                new_token, new_secret = wait_for_credentials(driver, account_index, timeout=10)
+                if not access_token: access_token = new_token
+                if not secretkey: secretkey = new_secret
             
             result['token_extracted'] = bool(access_token)
             result['secretkey_extracted'] = bool(secretkey)
