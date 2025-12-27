@@ -30,8 +30,8 @@ class AliV3:
         self.sign_key2 = "fpOKzILEajkqgSpr9VvU98FwAgIRcX"
         self.author = '古月'
         
-        # 缓存文件路径
-        self.cache_file = 'cookies_cache.json'
+        # 定义持久化存储文件的名称
+        self.session_file = 'auth_session.json'
         
         # 初始化账号密码变量，用于在 Sumbit_All 中重试时调用
         self.username = None
@@ -263,7 +263,7 @@ class AliV3:
 
         print(response.status_code)
         
-        # 新增：输出请求主体
+        # 输出请求主体
         print('Request Body:', json.dumps(json_data, indent=4, ensure_ascii=False))
         
         print(response.text)
@@ -275,35 +275,38 @@ class AliV3:
 
     def get_auth_params(self):
         """
-        获取 Cookies 和 Headers。
-        优先读取缓存文件，如果文件存在且更新时间在15分钟内，则使用缓存。
-        否则运行 getcookie.py 重新获取并更新缓存。
+        获取认证参数 (Cookies 和 Headers)。
+        机制：
+        1. 检查本地是否存在 'auth_session.json'。
+        2. 如果存在且上次更新时间在15分钟(900秒)内，直接读取并返回。
+        3. 如果不存在或已过期，调用 getcookie.py 获取新数据，并覆盖写入 'auth_session.json'。
         """
         cookies = None
         headers = None
+        current_time = time.time()
         
-        # 1. 尝试读取缓存
-        if os.path.exists(self.cache_file):
+        # --- 1. 尝试从本地持久化文件读取 ---
+        if os.path.exists(self.session_file):
             try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
+                with open(self.session_file, 'r', encoding='utf-8') as f:
+                    session_data = json.load(f)
                 
-                timestamp = cache_data.get('timestamp', 0)
-                current_time = time.time()
+                last_update = session_data.get('timestamp', 0)
                 
-                # 检查是否在15分钟(900秒)内
-                if current_time - timestamp < 900:
-                    print(f"检测到有效缓存 (上次更新: {time.strftime('%H:%M:%S', time.localtime(timestamp))})，直接使用。")
-                    return cache_data.get('cookies'), cache_data.get('headers')
+                # 检查是否过期 (15分钟 = 900秒)
+                if current_time - last_update < 900:
+                    print(f"✅ 读取本地会话文件 (上次更新: {time.strftime('%H:%M:%S', time.localtime(last_update))})，跳过脚本执行。")
+                    return session_data.get('cookies'), session_data.get('headers')
                 else:
-                    print("缓存已过期 (>15分钟)，准备重新获取...")
+                    print(f"⚠️ 本地会话文件已过期 (>15分钟)，准备重新获取...")
             except Exception as e:
-                print(f"读取缓存文件出错，将忽略缓存: {e}")
+                print(f"❌ 读取会话文件出错，将重新获取: {e}")
+        else:
+            print("ℹ️ 本地会话文件不存在，准备首次获取...")
 
-        # 2. 如果没有缓存或已过期，执行脚本获取
+        # --- 2. 调用 getcookie.py 获取新数据 ---
         try:
-            print("正在调用 getcookie.py 获取动态 Cookies 和 Headers...")
-            # 调用同目录下的 getcookie.py
+            print("🚀 正在调用 getcookie.py 获取动态 Cookies 和 Headers...")
             process = subprocess.Popen(
                 [sys.executable, 'getcookie.py'], 
                 stdout=subprocess.PIPE, 
@@ -313,7 +316,7 @@ class AliV3:
             
             if process.returncode == 0:
                 output_str = stdout
-                # 定位到 cookies = { 的位置
+                # 提取 cookies = { ... } 部分的代码
                 start_marker = "cookies = {"
                 start_index = output_str.find(start_marker)
                 
@@ -321,30 +324,33 @@ class AliV3:
                     code_block = output_str[start_index:]
                     dedented_code = textwrap.dedent(code_block)
                     
-                    # 在局部作用域中执行提取的代码
                     local_scope = {}
                     try:
+                        # 执行提取的Python代码字符串以获取变量
                         exec(dedented_code, {}, local_scope)
                         cookies = local_scope.get('cookies')
                         headers = local_scope.get('headers')
-                        print("成功获取动态 Cookies 和 Headers。")
                         
-                        # 3. 成功获取后，写入缓存
                         if cookies and headers:
+                            print("✅ 成功获取动态 Cookies 和 Headers。")
+                            
+                            # --- 3. 写入持久化文件 ---
                             try:
-                                with open(self.cache_file, 'w', encoding='utf-8') as f:
+                                with open(self.session_file, 'w', encoding='utf-8') as f:
                                     json.dump({
-                                        'timestamp': time.time(),
+                                        'timestamp': current_time,
                                         'cookies': cookies,
                                         'headers': headers
                                     }, f, ensure_ascii=False, indent=4)
-                                print("Cookies 和 Headers 已更新并写入缓存文件。")
+                                print(f"💾 数据已保存至 {self.session_file}。")
                             except Exception as e:
-                                print(f"写入缓存文件失败: {e}")
-                                
+                                print(f"❌ 写入会话文件失败: {e}")
+                        else:
+                            print("❌ 解析成功但变量为空。")
+
                     except Exception as parse_error:
-                        print(f"解析 getcookie.py 输出时出错: {parse_error}")
-                        # 容错尝试
+                        print(f"❌ 解析 getcookie.py 输出时出错: {parse_error}")
+                        # 尝试不缩进直接执行作为容错
                         try:
                             exec(code_block, {}, local_scope)
                             cookies = local_scope.get('cookies')
@@ -352,12 +358,12 @@ class AliV3:
                         except:
                             pass
                 else:
-                    print("错误：在 getcookie.py 输出中未找到 'cookies = {' 标记。")
+                    print("❌ 错误：在 getcookie.py 输出中未找到 'cookies = {' 标记。")
             else:
-                print(f"getcookie.py 执行失败: {stderr}")
+                print(f"❌ getcookie.py 执行失败: {stderr}")
         
         except Exception as e:
-            print(f"动态获取 Cookies/Headers 发生异常: {e}")
+            print(f"❌ 动态获取 Cookies/Headers 发生异常: {e}")
 
         return cookies, headers
 
@@ -368,11 +374,11 @@ class AliV3:
 
         import requests
 
-        # 调用封装好的方法获取 cookies 和 headers
+        # 调用新的获取方法
         cookies, headers = self.get_auth_params()
 
         if cookies is None or headers is None:
-            print("错误：未能获取到 Cookies 或 Headers (值为 None)，退出程序。")
+            print("❌ 错误：未能获取到 Cookies 或 Headers (值为 None)，退出程序。")
             sys.exit(1)
 
         json_data = {
@@ -414,7 +420,7 @@ class AliV3:
 if __name__ == '__main__':
     ali = AliV3()
     
-    # 检查命令行参数，如果有则使用，如果没有则提示
+    # 检查命令行参数
     if len(sys.argv) >= 3:
         user_arg = sys.argv[1]
         pass_arg = sys.argv[2]
