@@ -415,39 +415,17 @@ class JLCClient:
         return True
 
 def navigate_and_interact_m_jlc(driver, account_index):
-    """在 m.jlc.com 进行导航和交互以触发网络请求"""
-    log(f"账号 {account_index} - 在 m.jlc.com 进行交互操作...")
+    """在 m.jlc.com 刷新以触发网络请求 (不再交互)"""
+    log(f"账号 {account_index} - 刷新页面以获取 Token 和 SecretKey...")
     
     try:
-        WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        driver.execute_script("window.scrollTo(0, 300);")
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-        nav_selectors = [
-            "//div[contains(text(), '我的')]",
-            "//div[contains(text(), '个人中心')]",
-            "//div[contains(text(), '用户中心')]",
-            "//a[contains(@href, 'user')]",
-            "//a[contains(@href, 'center')]",
-        ]
-        
-        for selector in nav_selectors:
-            try:
-                element = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, selector)))
-                element.click()
-                log(f"账号 {account_index} - 点击导航元素: {selector}")
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                break
-            except:
-                continue
-        
-        driver.execute_script("window.scrollTo(0, 500);")
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        # 只需要刷新，等待页面加载，网络请求会自动发出
         driver.refresh()
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(2)
         
     except Exception as e:
-        log(f"账号 {account_index} - 交互操作出错: {e}")
+        log(f"账号 {account_index} - 页面刷新出错: {e}")
 
 def is_sunday():
     """检查今天是否是周日"""
@@ -560,6 +538,38 @@ def get_user_nickname_from_api(driver, account_index):
     except Exception as e:
         log(f"账号 {account_index} - ⚠ 获取用户昵称失败: {e}")
         return None
+
+def get_ali_auth_code(username, password):
+    """调用 AliV3 获取 authCode"""
+    if AliV3 is None:
+        return None
+    
+    f = io.StringIO()
+    with redirect_stdout(f):
+        try:
+            ali = AliV3()
+            ali.main(username=username, password=password)
+        except Exception as e:
+            pass
+    
+    ali_output = f.getvalue()
+    auth_code = None
+    
+    for line in ali_output.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            if isinstance(data, dict) and data.get('success'):
+                inner_data = data.get('data')
+                if isinstance(inner_data, dict) and 'authCode' in inner_data:
+                    auth_code = inner_data['authCode']
+                    break
+        except json.JSONDecodeError:
+            continue
+            
+    return auth_code
 
 def sign_in_account(username, password, account_index, total_accounts, retry_count=0):
     """为单个账号执行完整的签到流程"""
@@ -786,55 +796,90 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
 
         # 9. 金豆签到流程
         log(f"账号 {account_index} - 开始金豆签到流程...")
+        driver.get("https://m.jlc.com/")
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         
-        # 使用统一登录页面的 URL
-        target_url = "https://passport.jlc.com/m/login?appId=JLC_MOBILE_APP&redirectUrl=https%3A%2F%2Fm.jlc.com%2Fpages%2Fmy%2Findex%23%2Ffrom%3Djlc_cas&wxAuthProxy=https%3A%2F%2Fm.jlc.com%2Fpages-common%2Fwechat%2Fweb-page-auth-proxy&bizExtendedParam=%7B%7D"
-        driver.get(target_url)
-        log(f"账号 {account_index} - 已访问统一登录页，等待'进入系统'按钮...")
+        # 重新获取 AuthCode
+        log(f"账号 {account_index} - 正在重新调用 AliV3 获取 m.jlc.com 登录凭证...")
+        auth_code_jlc = get_ali_auth_code(username, password)
         
-        try:
-            # 等待并点击进入系统按钮
-            enter_system_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., '进入系统')]")))
-            enter_system_btn.click()
-            log(f"账号 {account_index} - ✅ 已点击'进入系统'，等待跳转...")
+        if auth_code_jlc:
+            log(f"账号 {account_index} - ✅ 成功获取 m.jlc.com 登录 authCode")
             
-            # 等待跳转回 m.jlc.com
-            WebDriverWait(driver, 15).until(lambda d: "m.jlc.com" in d.current_url)
-            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            # 给予一点时间让脚本加载并写入 localStorage/Cookie 以及触发网络请求
-            time.sleep(3)
-        except Exception as e:
-             log(f"账号 {account_index} - ⚠ 登录页交互异常 (可能已直接跳转或元素未找到): {e}")
-
-        # navigate_and_interact_m_jlc(driver, account_index) # 用户要求移除此交互步骤
-        
-        access_token = extract_token_from_local_storage(driver)
-        secretkey = extract_secretkey_from_devtools(driver)
-        
-        result['token_extracted'] = bool(access_token)
-        result['secretkey_extracted'] = bool(secretkey)
-        
-        if access_token and secretkey:
-            log(f"账号 {account_index} - ✅ 成功提取 token 和 secretkey")
+            # 使用 JS 进行登录
+            login_js = """
+            var code = arguments[0];
+            var callback = arguments[1];
+            var formData = new FormData();
+            formData.append('code', code);
             
-            jlc_client = JLCClient(access_token, secretkey, account_index, driver)
-            jindou_success = jlc_client.execute_full_process()
+            fetch('/api/login/login-by-code', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-JLC-AccessToken': 'NONE'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.code === 200 && data.data && data.data.accessToken) {
+                    window.localStorage.setItem('X-JLC-AccessToken', data.data.accessToken);
+                    callback(true);
+                } else {
+                    console.error('Login failed:', data);
+                    callback(false);
+                }
+            })
+            .catch(err => {
+                console.error('Login error:', err);
+                callback(false);
+            });
+            """
             
-            # 记录金豆签到结果
-            result['jindou_success'] = jindou_success
-            result['jindou_status'] = jlc_client.sign_status
-            result['initial_jindou'] = jlc_client.initial_jindou
-            result['final_jindou'] = jlc_client.final_jindou
-            result['jindou_reward'] = jlc_client.jindou_reward
-            result['has_jindou_reward'] = jlc_client.has_reward
+            try:
+                login_success = driver.execute_async_script(login_js, auth_code_jlc)
+            except Exception as e:
+                log(f"账号 {account_index} - ❌ 执行 JS 登录脚本出错: {e}")
+                login_success = False
             
-            if jindou_success:
-                log(f"账号 {account_index} - ✅ 金豆签到流程完成")
+            if login_success:
+                log(f"账号 {account_index} - ✅ m.jlc.com 登录接口调用成功")
+                
+                navigate_and_interact_m_jlc(driver, account_index)
+                
+                access_token = extract_token_from_local_storage(driver)
+                secretkey = extract_secretkey_from_devtools(driver)
+                
+                result['token_extracted'] = bool(access_token)
+                result['secretkey_extracted'] = bool(secretkey)
+                
+                if access_token and secretkey:
+                    log(f"账号 {account_index} - ✅ 成功提取 token 和 secretkey")
+                    
+                    jlc_client = JLCClient(access_token, secretkey, account_index, driver)
+                    jindou_success = jlc_client.execute_full_process()
+                    
+                    # 记录金豆签到结果
+                    result['jindou_success'] = jindou_success
+                    result['jindou_status'] = jlc_client.sign_status
+                    result['initial_jindou'] = jlc_client.initial_jindou
+                    result['final_jindou'] = jlc_client.final_jindou
+                    result['jindou_reward'] = jlc_client.jindou_reward
+                    result['has_jindou_reward'] = jlc_client.has_reward
+                    
+                    if jindou_success:
+                        log(f"账号 {account_index} - ✅ 金豆签到流程完成")
+                    else:
+                        log(f"账号 {account_index} - ❌ 金豆签到流程失败")
+                else:
+                    log(f"账号 {account_index} - ❌ 无法提取到 token 或 secretkey，跳过金豆签到")
+                    result['jindou_status'] = 'Token提取失败'
             else:
-                log(f"账号 {account_index} - ❌ 金豆签到流程失败")
+                log(f"账号 {account_index} - ❌ m.jlc.com 登录接口返回失败")
+                result['jindou_status'] = '登录失败'
         else:
-            log(f"账号 {account_index} - ❌ 无法提取到 token 或 secretkey，跳过金豆签到")
-            result['jindou_status'] = 'Token提取失败'
+            log(f"账号 {account_index} - ❌ 获取 m.jlc.com authCode 失败")
+            result['jindou_status'] = 'AuthCode获取失败'
 
     except Exception as e:
         log(f"账号 {account_index} - ❌ 程序执行错误: {e}")
