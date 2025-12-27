@@ -29,10 +29,11 @@ class AliV3:
         self.sign_key1 = "YSKfst7GaVkXwZYvVihJsKF9r89koz"
         self.sign_key2 = "fpOKzILEajkqgSpr9VvU98FwAgIRcX"
         self.author = '古月'
-        self.cache_file = 'cookies_cache.json'
         
+        # 初始化账号密码变量，用于在 Sumbit_All 中重试时调用
         self.username = None
         self.password = None
+        self.cache_file = "cookie_cache.json" # 缓存文件名
 
         self.headers = {
             'Accept': '*/*',
@@ -115,6 +116,7 @@ class AliV3:
         filename = f'fenlin_temp_{self.CertifyId}.js'
         filepath = os.path.join('./temp', filename)
 
+        # 确保temp目录存在
         if not os.path.exists('./temp'):
             os.makedirs('./temp')
 
@@ -195,6 +197,7 @@ class AliV3:
         args = MatchArgs(self.StaticPath)
         if args is None:
             print('StaticPath not found')
+            # 重试逻辑：使用保存的 self.username 和 self.password
             if self.username and self.password:
                 print("Retry executing main...")
                 self.main(self.username, self.password)
@@ -257,7 +260,10 @@ class AliV3:
         )
 
         print(response.status_code)
+        
+        # 输出请求主体
         print('Request Body:', json.dumps(json_data, indent=4, ensure_ascii=False))
+        
         print(response.text)
         
         try:
@@ -265,26 +271,13 @@ class AliV3:
         except Exception as e:
             print("Failed to get captchaTicket:", e)
 
-    def get_auth_params(self):
+    def fetch_new_cookies(self):
+        """执行脚本获取新的 cookies 和 headers，并保存到缓存文件"""
+        print("正在调用 getcookie.py 获取动态 Cookies 和 Headers...")
         cookies = None
         headers = None
         
-        if os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-                
-                timestamp = cache_data.get('timestamp', 0)
-                if time.time() - timestamp < 900:
-                    print(f"使用缓存配置 (更新于: {time.strftime('%H:%M:%S', time.localtime(timestamp))})")
-                    return cache_data.get('cookies'), cache_data.get('headers')
-                else:
-                    print("缓存已过期，重新获取...")
-            except Exception as e:
-                print(f"读取缓存失败: {e}")
-
         try:
-            print("调用 getcookie.py 获取参数...")
             process = subprocess.Popen(
                 [sys.executable, 'getcookie.py'], 
                 stdout=subprocess.PIPE, 
@@ -299,44 +292,87 @@ class AliV3:
                 
                 if start_index != -1:
                     code_block = output_str[start_index:]
+                    dedented_code = textwrap.dedent(code_block)
+                    
                     local_scope = {}
                     try:
-                        exec(textwrap.dedent(code_block), {}, local_scope)
-                    except:
-                        exec(code_block, {}, local_scope)
+                        exec(dedented_code, {}, local_scope)
+                        cookies = local_scope.get('cookies')
+                        headers = local_scope.get('headers')
+                        print("成功获取动态 Cookies 和 Headers。")
                         
-                    cookies = local_scope.get('cookies')
-                    headers = local_scope.get('headers')
-                    
-                    if cookies and headers:
+                        # 保存到缓存文件
+                        if cookies and headers:
+                            cache_data = {
+                                "timestamp": time.time(),
+                                "cookies": cookies,
+                                "headers": headers
+                            }
+                            with open(self.cache_file, "w", encoding="utf-8") as f:
+                                json.dump(cache_data, f, ensure_ascii=False, indent=4)
+                            print(f"数据已保存到 {self.cache_file}")
+                            
+                    except Exception as parse_error:
+                        print(f"解析 getcookie.py 输出时出错: {parse_error}")
+                        # 备用尝试
                         try:
-                            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                                json.dump({
-                                    'timestamp': time.time(),
-                                    'cookies': cookies,
-                                    'headers': headers
-                                }, f, ensure_ascii=False, indent=4)
-                            print("配置已更新至缓存文件")
-                        except Exception as e:
-                            print(f"写入缓存失败: {e}")
+                            exec(code_block, {}, local_scope)
+                            cookies = local_scope.get('cookies')
+                            headers = local_scope.get('headers')
+                        except:
+                            pass
                 else:
-                    print("getcookie.py 输出格式错误")
+                    print("错误：在 getcookie.py 输出中未找到 'cookies = {' 标记。")
             else:
-                print(f"getcookie.py 执行出错: {stderr}")
+                print(f"getcookie.py 执行失败: {stderr}")
         except Exception as e:
-            print(f"获取参数异常: {e}")
+            print(f"执行 getcookie.py 发生异常: {e}")
+            
+        return cookies, headers
 
+    def get_cookies_and_headers(self):
+        """获取 cookies 和 headers，带缓存逻辑"""
+        now = time.time()
+        need_refresh = True
+        
+        cookies = None
+        headers = None
+        
+        if os.path.exists(self.cache_file):
+            try:
+                with open(self.cache_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    saved_time = data.get("timestamp", 0)
+                    
+                    # 检查是否在15分钟内 (15 * 60 = 900秒)
+                    if now - saved_time < 900:
+                        print("缓存有效，直接使用缓存的 Cookies 和 Headers。")
+                        cookies = data.get("cookies")
+                        headers = data.get("headers")
+                        if cookies and headers:
+                            need_refresh = False
+                    else:
+                        print("缓存已过期（超过15分钟）。")
+            except Exception as e:
+                print(f"读取缓存文件出错: {e}")
+        else:
+            print("缓存文件不存在，新建。")
+
+        if need_refresh:
+            cookies, headers = self.fetch_new_cookies()
+            
         return cookies, headers
 
     def Login(self, username, password):
         if not self.captchaTicket:
-            print("Skipping login: No captchaTicket.")
+            print("Skipping login: No captchaTicket acquired.")
             return
 
-        cookies, headers = self.get_auth_params()
+        # 使用带缓存的获取方法
+        cookies, headers = self.get_cookies_and_headers()
 
         if cookies is None or headers is None:
-            print("获取 Cookies/Headers 失败，退出")
+            print("错误：未能获取到 Cookies 或 Headers (值为 None)，退出程序。")
             sys.exit(1)
 
         json_data = {
@@ -345,7 +381,8 @@ class AliV3:
             'isAutoLogin': True,
             'captchaTicket': self.captchaTicket,
         }
-
+        
+        import requests
         response = requests.post('https://passport.jlc.com/api/cas/login/with-password', cookies=cookies,
                                  headers=headers, json=json_data)
 
@@ -355,9 +392,11 @@ class AliV3:
         pass
 
     def main(self, username, password):
+        # 保存参数到实例变量
         self.username = username
         self.password = password
 
+        # 使用 self 调用实例方法，不再重新实例化 AliV3
         self.Req_Init()
         self.decrypt_DeviceConfig()
         self.GetDynamic_Key()
@@ -366,6 +405,7 @@ class AliV3:
         
         res = self.Sumbit_All()
         
+        # 传递加密后的账号密码进行登录
         enc_username = pwdEncrypt(username)
         enc_password = pwdEncrypt(password)
         self.Login(enc_username, enc_password)
@@ -375,9 +415,11 @@ class AliV3:
 if __name__ == '__main__':
     ali = AliV3()
     
+    # 检查命令行参数，如果有则使用，如果没有则提示
     if len(sys.argv) >= 3:
         user_arg = sys.argv[1]
         pass_arg = sys.argv[2]
         ali.main(user_arg, pass_arg)
     else:
         print("用法: python AliV3.py <username> <password>")
+        print("示例: python AliV3.py 13800138000 MyPassword123")
