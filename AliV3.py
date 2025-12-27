@@ -30,6 +30,9 @@ class AliV3:
         self.sign_key2 = "fpOKzILEajkqgSpr9VvU98FwAgIRcX"
         self.author = '古月'
         
+        # 缓存文件路径
+        self.cache_file = 'cookies_cache.json'
+        
         # 初始化账号密码变量，用于在 Sumbit_All 中重试时调用
         self.username = None
         self.password = None
@@ -270,16 +273,34 @@ class AliV3:
         except Exception as e:
             print("Failed to get captchaTicket:", e)
 
-    def Login(self, username, password):
-        if not self.captchaTicket:
-            print("Skipping login: No captchaTicket acquired.")
-            return
-
-        import requests
-
+    def get_auth_params(self):
+        """
+        获取 Cookies 和 Headers。
+        优先读取缓存文件，如果文件存在且更新时间在15分钟内，则使用缓存。
+        否则运行 getcookie.py 重新获取并更新缓存。
+        """
         cookies = None
         headers = None
         
+        # 1. 尝试读取缓存
+        if os.path.exists(self.cache_file):
+            try:
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+                
+                timestamp = cache_data.get('timestamp', 0)
+                current_time = time.time()
+                
+                # 检查是否在15分钟(900秒)内
+                if current_time - timestamp < 900:
+                    print(f"检测到有效缓存 (上次更新: {time.strftime('%H:%M:%S', time.localtime(timestamp))})，直接使用。")
+                    return cache_data.get('cookies'), cache_data.get('headers')
+                else:
+                    print("缓存已过期 (>15分钟)，准备重新获取...")
+            except Exception as e:
+                print(f"读取缓存文件出错，将忽略缓存: {e}")
+
+        # 2. 如果没有缓存或已过期，执行脚本获取
         try:
             print("正在调用 getcookie.py 获取动态 Cookies 和 Headers...")
             # 调用同目录下的 getcookie.py
@@ -291,28 +312,39 @@ class AliV3:
             stdout, stderr = process.communicate()
             
             if process.returncode == 0:
-                output_str = stdout  # 由于 Popen 有 encoding='utf-8'，stdout 已为 str
+                output_str = stdout
                 # 定位到 cookies = { 的位置
                 start_marker = "cookies = {"
                 start_index = output_str.find(start_marker)
                 
                 if start_index != -1:
-                    # 提取后续的代码部分
                     code_block = output_str[start_index:]
-                    
                     dedented_code = textwrap.dedent(code_block)
                     
                     # 在局部作用域中执行提取的代码
                     local_scope = {}
                     try:
                         exec(dedented_code, {}, local_scope)
-                        # 这里不提供默认值 {}，如果脚本中没有定义 cookies/headers，则为 None
                         cookies = local_scope.get('cookies')
                         headers = local_scope.get('headers')
                         print("成功获取动态 Cookies 和 Headers。")
+                        
+                        # 3. 成功获取后，写入缓存
+                        if cookies and headers:
+                            try:
+                                with open(self.cache_file, 'w', encoding='utf-8') as f:
+                                    json.dump({
+                                        'timestamp': time.time(),
+                                        'cookies': cookies,
+                                        'headers': headers
+                                    }, f, ensure_ascii=False, indent=4)
+                                print("Cookies 和 Headers 已更新并写入缓存文件。")
+                            except Exception as e:
+                                print(f"写入缓存文件失败: {e}")
+                                
                     except Exception as parse_error:
                         print(f"解析 getcookie.py 输出时出错: {parse_error}")
-                        # 如果 dedent 失败，尝试直接执行（容错）
+                        # 容错尝试
                         try:
                             exec(code_block, {}, local_scope)
                             cookies = local_scope.get('cookies')
@@ -327,10 +359,21 @@ class AliV3:
         except Exception as e:
             print(f"动态获取 Cookies/Headers 发生异常: {e}")
 
+        return cookies, headers
+
+    def Login(self, username, password):
+        if not self.captchaTicket:
+            print("Skipping login: No captchaTicket acquired.")
+            return
+
+        import requests
+
+        # 调用封装好的方法获取 cookies 和 headers
+        cookies, headers = self.get_auth_params()
+
         if cookies is None or headers is None:
             print("错误：未能获取到 Cookies 或 Headers (值为 None)，退出程序。")
             sys.exit(1)
-
 
         json_data = {
             'username': username,
