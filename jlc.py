@@ -541,32 +541,49 @@ def parse_logs_for_credentials(logs):
             
     return token, secret
 
-def wait_for_credentials(driver, timeout=20):
+def wait_for_credentials(driver, account_index, timeout=20):
     """
     等待并提取 Token 和 SecretKey
     逻辑：循环检查，同时查看 localStorage 和 网络日志
+    同时监控 URL 变化，防重定向
     """
     start_time = time.time()
     access_token = None
     secretkey = None
+    last_url = driver.current_url
+    
+    log(f"账号 {account_index} - 当前URL: {last_url}")
     
     while time.time() - start_time < timeout:
-        # 1. 尝试从 localStorage 获取 token (如果尚未获取)
+        # 0. 监控 URL
+        current_url = driver.current_url
+        if current_url != last_url:
+            log(f"账号 {account_index} - ⚠ URL发生变化: {current_url}")
+            last_url = current_url
+            
+            # 如果被重定向到登录页，直接失败
+            if "passport.jlc.com" in current_url or "/login" in current_url:
+                log(f"账号 {account_index} - ❌ 检测到重定向至登录页，AuthCode 可能失效")
+                return None, None
+        
+        # 1. 尝试从 localStorage 获取 token
         if not access_token:
             access_token = extract_token_from_local(driver)
+            if access_token:
+                 log(f"账号 {account_index} - ✅ 从 localStorage 提取到 Token")
         
-        # 2. 读取网络日志 (这是一次性操作，读完就没了，所以必须每次循环都读并累积结果)
+        # 2. 读取网络日志 (累积式提取)
         try:
             logs = driver.get_log('performance')
             t_net, s_net = parse_logs_for_credentials(logs)
             
-            # 如果 localStorage 没拿到，尝试用网络的
             if not access_token and t_net:
                 access_token = t_net
+                log(f"账号 {account_index} - ✅ 从网络日志提取到 Token")
             
-            # SecretKey 主要靠网络日志
             if not secretkey and s_net:
                 secretkey = s_net
+                log(f"账号 {account_index} - ✅ 从网络日志提取到 SecretKey")
                 
         except Exception:
             pass
@@ -774,7 +791,7 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             
             # 使用新的等待提取函数
             log(f"账号 {account_index} - 正在提取凭证(Token/SecretKey)...")
-            access_token, secretkey = wait_for_credentials(driver, timeout=20)
+            access_token, secretkey = wait_for_credentials(driver, account_index, timeout=20)
             
             result['token_extracted'] = bool(access_token)
             result['secretkey_extracted'] = bool(secretkey)
