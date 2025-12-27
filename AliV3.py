@@ -30,13 +30,12 @@ class AliV3:
         self.sign_key2 = "fpOKzILEajkqgSpr9VvU98FwAgIRcX"
         self.author = '古月'
         
+        # 初始化账号密码变量，用于在 Sumbit_All 中重试时调用
         self.username = None
         self.password = None
 
-        # --- 修改点1：使用绝对路径，确保文件存取位置一致 ---
-        self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.cache_file = os.path.join(self.script_dir, "cookie_cache.json")
-        # ------------------------------------------------
+        # 缓存文件名称
+        self.cookie_cache_file = 'cookie_cache.json'
 
         self.headers = {
             'Accept': '*/*',
@@ -90,12 +89,15 @@ class AliV3:
                                  proxies=proxy)
 
         print(response.text)
-        self.DeviceConfig = response.json()['DeviceConfig']
-        print('DeviceConfig', self.DeviceConfig)
-        self.CertifyId = response.json()['CertifyId']
-        print('CertifyId', self.CertifyId)
-        self.StaticPath = response.json()['StaticPath'] + '.js'
-        print('StaticPath', self.StaticPath)
+        try:
+            self.DeviceConfig = response.json()['DeviceConfig']
+            print('DeviceConfig', self.DeviceConfig)
+            self.CertifyId = response.json()['CertifyId']
+            print('CertifyId', self.CertifyId)
+            self.StaticPath = response.json()['StaticPath'] + '.js'
+            print('StaticPath', self.StaticPath)
+        except KeyError:
+            print("Req_Init Error: Response format unexpected.")
 
     def decrypt_DeviceConfig(self):
         with open('AliyunCaptcha.js', 'r', encoding='utf-8') as f:
@@ -119,6 +121,7 @@ class AliV3:
         filename = f'fenlin_temp_{self.CertifyId}.js'
         filepath = os.path.join('./temp', filename)
 
+        # 确保temp目录存在
         if not os.path.exists('./temp'):
             os.makedirs('./temp')
 
@@ -147,19 +150,25 @@ class AliV3:
         ctx = execjs.compile(js)
 
         env_folder = 'env'
-        json_files = [f for f in os.listdir(env_folder) if f.endswith('.json')]
-        random_json_file = random.choice(json_files)
-        json_file_path = os.path.join(env_folder, random_json_file)
+        try:
+            json_files = [f for f in os.listdir(env_folder) if f.endswith('.json')]
+            if not json_files:
+                print("No env files found.")
+                return
+            random_json_file = random.choice(json_files)
+            json_file_path = os.path.join(env_folder, random_json_file)
 
-        with open(json_file_path, 'r', encoding='utf-8') as f:
-            env_data = json.load(f)
+            with open(json_file_path, 'r', encoding='utf-8') as f:
+                env_data = json.load(f)
 
-        print(f'随机选择的环境文件: {random_json_file}')
-        data = ctx.call('getLog2Data', data, self.Dynamic_Key, self.Real_Config, env_data)
-        print(data)
-        response = requests.post('https://cloudauth-device-dualstack.cn-shanghai.aliyuncs.com/', headers=self.headers,
-                                 data=data, proxies=proxy)
-        print(response.text)
+            print(f'随机选择的环境文件: {random_json_file}')
+            data = ctx.call('getLog2Data', data, self.Dynamic_Key, self.Real_Config, env_data)
+            print(data)
+            response = requests.post('https://cloudauth-device-dualstack.cn-shanghai.aliyuncs.com/', headers=self.headers,
+                                     data=data, proxies=proxy)
+            print(response.text)
+        except Exception as e:
+            print(f"GetLog2 Error: {e}")
 
     def GetLog3(self):
         data = {
@@ -199,6 +208,7 @@ class AliV3:
         args = MatchArgs(self.StaticPath)
         if args is None:
             print('StaticPath not found')
+            # 重试逻辑：使用保存的 self.username 和 self.password
             if self.username and self.password:
                 print("Retry executing main...")
                 self.main(self.username, self.password)
@@ -261,6 +271,7 @@ class AliV3:
         )
 
         print(response.status_code)
+        
         print('Request Body:', json.dumps(json_data, indent=4, ensure_ascii=False))
         print(response.text)
         
@@ -269,13 +280,41 @@ class AliV3:
         except Exception as e:
             print("Failed to get captchaTicket:", e)
 
-    def fetch_new_cookies(self):
-        """执行脚本获取新的 cookies 和 headers，并保存到缓存文件"""
-        print("正在调用 getcookie.py 获取动态 Cookies 和 Headers...", flush=True)
+    def get_cached_cookies_headers(self):
+        """
+        获取Cookies和Headers。
+        检查本地缓存，如果存在且未过期（20分钟），则直接使用。
+        否则运行 getcookie.py 获取并更新缓存。
+        """
+        need_refresh = True
+        cached_data = {}
+
+        # 尝试读取缓存
+        if os.path.exists(self.cookie_cache_file):
+            try:
+                with open(self.cookie_cache_file, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                
+                last_time = cached_data.get('timestamp', 0)
+                current_time = time.time()
+                
+                # 检查时间差是否小于 20 分钟 (1200秒)
+                if current_time - last_time < 20 * 60:
+                    print("缓存有效 (小于20分钟)，使用缓存的 Cookies 和 Headers。")
+                    return cached_data.get('cookies'), cached_data.get('headers')
+                else:
+                    print(f"缓存已过期 (上次更新: {time.ctime(last_time)})，重新获取...")
+            except Exception as e:
+                print(f"读取缓存文件出错: {e}，将重新获取。")
+        else:
+            print("缓存文件不存在，开始获取...")
+
+        # 调用 getcookie.py 获取
         cookies = None
         headers = None
         
         try:
+            print("正在调用 getcookie.py 获取动态 Cookies 和 Headers...")
             process = subprocess.Popen(
                 [sys.executable, 'getcookie.py'], 
                 stdout=subprocess.PIPE, 
@@ -291,37 +330,15 @@ class AliV3:
                 if start_index != -1:
                     code_block = output_str[start_index:]
                     dedented_code = textwrap.dedent(code_block)
-                    
                     local_scope = {}
                     try:
                         exec(dedented_code, {}, local_scope)
                         cookies = local_scope.get('cookies')
                         headers = local_scope.get('headers')
-                        print("成功获取动态 Cookies 和 Headers。", flush=True)
-                        
-                        # --- 修改点2：增加保存时的调试信息，确保写入成功 ---
-                        if cookies and headers:
-                            print(f"DEBUG: 准备写入缓存文件: {self.cache_file}", flush=True)
-                            cache_data = {
-                                "timestamp": time.time(),
-                                "cookies": cookies,
-                                "headers": headers
-                            }
-                            try:
-                                with open(self.cache_file, "w", encoding="utf-8") as f:
-                                    json.dump(cache_data, f, ensure_ascii=False, indent=4)
-                                # 确保操作系统真正写入磁盘
-                                f.flush()
-                                os.fsync(f.fileno()) 
-                                print(f"SUCCESS: 数据已成功保存到 {self.cache_file}", flush=True)
-                            except Exception as save_err:
-                                print(f"ERROR: 保存缓存文件失败: {save_err}", flush=True)
-                        else:
-                            print(f"WARNING: 获取到的 cookies 或 headers 为空，无法保存。", flush=True)
-                        # ------------------------------------------------
-
+                        print("getcookies执行成功，获取到数据。")
                     except Exception as parse_error:
-                        print(f"解析 getcookie.py 输出时出错: {parse_error}", flush=True)
+                        print(f"解析 getcookie.py 输出时出错: {parse_error}")
+                        # 容错尝试
                         try:
                             exec(code_block, {}, local_scope)
                             cookies = local_scope.get('cookies')
@@ -329,95 +346,90 @@ class AliV3:
                         except:
                             pass
                 else:
-                    print("错误：在 getcookie.py 输出中未找到 'cookies = {' 标记。", flush=True)
+                    print("错误：在 getcookie.py 输出中未找到 'cookies = {' 标记。")
             else:
-                print(f"getcookie.py 执行失败: {stderr}", flush=True)
+                print(f"getcookie.py 执行失败: {stderr}")
+        
         except Exception as e:
-            print(f"执行 getcookie.py 发生异常: {e}", flush=True)
-            
-        return cookies, headers
+            print(f"动态获取 Cookies/Headers 发生异常: {e}")
 
-    def get_cookies_and_headers(self):
-        """获取 cookies 和 headers，带缓存逻辑"""
-        now = time.time()
-        need_refresh = True
+        # 保存缓存
+        save_data = {
+            'timestamp': time.time(),
+            'cookies': cookies,
+            'headers': headers
+        }
         
-        cookies = None
-        headers = None
-        
-        if os.path.exists(self.cache_file):
-            try:
-                print(f"发现缓存文件: {self.cache_file}，尝试读取...", flush=True)
-                with open(self.cache_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    saved_time = data.get("timestamp", 0)
-                    
-                    # 检查是否在15分钟内 (15 * 60 = 900秒)
-                    if now - saved_time < 900:
-                        print("缓存有效，直接使用缓存的 Cookies 和 Headers。", flush=True)
-                        cookies = data.get("cookies")
-                        headers = data.get("headers")
-                        if cookies and headers:
-                            need_refresh = False
-                    else:
-                        print("缓存已过期（超过15分钟）。", flush=True)
-            except Exception as e:
-                print(f"读取缓存文件出错: {e}", flush=True)
-        else:
-            print(f"缓存文件不存在 (路径: {self.cache_file})，准备新建。", flush=True)
+        try:
+            with open(self.cookie_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, indent=4)
+            print(f"已更新缓存文件: {self.cookie_cache_file}")
+        except Exception as e:
+            print(f"保存缓存文件失败: {e}")
 
-        if need_refresh:
-            cookies, headers = self.fetch_new_cookies()
-            
         return cookies, headers
 
     def Login(self, username, password):
         if not self.captchaTicket:
-            print("Skipping login: No captchaTicket acquired.")
+            print("跳过登录: No captchaTicket acquired.")
             return
 
-        cookies, headers = self.get_cookies_and_headers()
+        # 获取 cookies 和 headers
+        cookies, headers = self.get_cached_cookies_headers()
 
         if cookies is None or headers is None:
-            print("错误：未能获取到 Cookies 或 Headers (值为 None)，退出程序。", flush=True)
+            print("错误：未能获取到 Cookies 或 Headers (值为 None)，退出程序。")
             sys.exit(1)
 
         json_data = {
             'username': username,
             'password': password,
-            'isAutoLogin': False,
+            'isAutoLogin': True,
             'captchaTicket': self.captchaTicket,
         }
-        
-        import requests
-        response = requests.post('https://passport.jlc.com/api/cas/login/with-password', cookies=cookies,
-                                 headers=headers, json=json_data)
 
-        print(response.text)
+        try:
+            response = requests.post('https://passport.jlc.com/api/cas/login/with-password', cookies=cookies,
+                                     headers=headers, json=json_data)
+            print("Login Response:", response.text)
+        except Exception as e:
+            print(f"Login Request Failed: {e}")
+
+    def test(self):
+        pass
 
     def main(self, username, password):
+        # 保存参数到实例变量
         self.username = username
         self.password = password
 
+        # 使用 self 调用实例方法
         self.Req_Init()
-        self.decrypt_DeviceConfig()
-        self.GetDynamic_Key()
-        self.GetLog2()
-        self.GetLog3()
-        
-        res = self.Sumbit_All()
-        
-        enc_username = pwdEncrypt(username)
-        enc_password = pwdEncrypt(password)
-        self.Login(enc_username, enc_password)
-        return res
+        if self.DeviceConfig: # 只有在Init成功后才继续
+            self.decrypt_DeviceConfig()
+            self.GetDynamic_Key()
+            self.GetLog2()
+            self.GetLog3()
+            
+            res = self.Sumbit_All()
+            
+            # 传递加密后的账号密码进行登录
+            enc_username = pwdEncrypt(username)
+            enc_password = pwdEncrypt(password)
+            self.Login(enc_username, enc_password)
+            return res
+        else:
+            print("初始化失败，无法继续。")
+
 
 if __name__ == '__main__':
     ali = AliV3()
+    
+    # 检查命令行参数
     if len(sys.argv) >= 3:
         user_arg = sys.argv[1]
         pass_arg = sys.argv[2]
         ali.main(user_arg, pass_arg)
     else:
         print("用法: python AliV3.py <username> <password>")
-
+        print("示例: python AliV3.py 13800138000 MyPassword123")
