@@ -385,7 +385,7 @@ class AliV3:
         json_data = {
             'username': username,
             'password': password,
-            'isAutoLogin': True,
+            'isAutoLogin': False,
             'captchaTicket': self.captchaTicket,
         }
         
@@ -420,3 +420,4 @@ if __name__ == '__main__':
         ali.main(user_arg, pass_arg)
     else:
         print("用法: python AliV3.py <username> <password>")
+
