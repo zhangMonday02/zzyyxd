@@ -7,7 +7,7 @@ import random
 import requests
 import io
 import platform
-import threading
+import multiprocessing
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta
 from selenium import webdriver
@@ -536,64 +536,101 @@ def get_user_nickname_from_api(driver, account_index):
         log(f"账号 {account_index} - ⚠ 获取用户昵称失败: {e}")
         return None
 
-def run_aliv3_with_timeout(username, password, timeout=60):
+def run_aliv3_task(username, password, output_file):
     """
-    在子线程中运行 AliV3，带超时控制，防止卡死
+    独立进程运行 AliV3，将日志写入文件。
+    这样即使进程被 kill，文件内容依然存在。
     """
-    result_container = {"output": "", "finished": False}
-    f = io.StringIO()
-
-    def target():
+    with open(output_file, 'w', encoding='utf-8') as f:
         with redirect_stdout(f):
             try:
-                if AliV3:
-                    ali = AliV3()
-                    ali.main(username=username, password=password)
+                # 尝试从全局获取 AliV3，或者重新导入
+                if 'AliV3' in globals() and globals()['AliV3']:
+                    ali_cls = globals()['AliV3']
+                else:
+                    from AliV3 import AliV3 as ali_cls
+                
+                ali = ali_cls()
+                ali.main(username=username, password=password)
             except Exception as e:
-                print(f"Error executing AliV3: {e}")
-        result_container["finished"] = True
+                print(f"Error executing AliV3 in process: {e}")
 
-    t = threading.Thread(target=target)
-    t.daemon = True # 设置为守护线程，确保主程序退出时线程也会结束
-    t.start()
-    t.join(timeout)  # 等待 timeout 秒
-
-    result_container["output"] = f.getvalue()
-    if not result_container["finished"]:
-        return result_container["output"], True  # (output, is_timeout)
-    return result_container["output"], False
-
-def get_ali_auth_code(username, password):
-    """调用 AliV3 获取 authCode"""
+def get_ali_auth_code(username, password, account_index=0):
+    """
+    调用 AliV3 获取 authCode，超时控制 (180s)
+    """
     if AliV3 is None:
         return None
     
-    # 使用带超时的调用
-    ali_output, is_timeout = run_aliv3_with_timeout(username, password, timeout=60)
+    # 创建临时文件用于存储子进程的 stdout
+    fd, temp_path = tempfile.mkstemp()
+    os.close(fd) # 关闭文件描述符，只保留路径
     
-    if is_timeout:
-        print(f"AliV3 timeout in get_ali_auth_code. Logs:\n{ali_output}")
-        return None
-
-    if not ali_output:
-        return None
-
     auth_code = None
+    ali_output = ""
     
+    try:
+        # 启动子进程运行 AliV3
+        p = multiprocessing.Process(target=run_aliv3_task, args=(username, password, temp_path))
+        p.start()
+        
+        # 等待进程结束，超时 180 秒
+        p.join(timeout=180)
+        
+        if p.is_alive():
+            log(f"账号 {account_index} - ❌ 登录超时 (超过180秒)，正在强制终止 登录脚本...")
+            p.terminate()
+            p.join() # 确保进程已退出
+            
+            # 读取已生成的日志以便调试
+            try:
+                with open(temp_path, 'r', encoding='utf-8') as f:
+                    ali_output = f.read()
+            except Exception:
+                ali_output = "无法读取超时日志"
+            
+            log(f"--- 超时前的 登录脚本(AliV3) 日志 ---\n{ali_output}\n--------------------------")
+            return None # 超时返回 None
+            
+        else:
+            # 正常结束，读取日志
+            try:
+                with open(temp_path, 'r', encoding='utf-8') as f:
+                    ali_output = f.read()
+            except Exception:
+                ali_output = ""
+
+    finally:
+        # 清理临时文件
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+
+    # 解析输出获取 authCode
     for line in ali_output.split('\n'):
         line = line.strip()
         if not line:
             continue
         try:
             data = json.loads(line)
+            # 检查 authCode
             if isinstance(data, dict) and data.get('success'):
                 inner_data = data.get('data')
                 if isinstance(inner_data, dict) and 'authCode' in inner_data:
                     auth_code = inner_data['authCode']
                     break
+            # 检查密码错误 (用于在外部判断)
+            if isinstance(data, dict) and data.get('code') == 10208:
+                pass
         except json.JSONDecodeError:
             continue
             
+    # 如果没获取到 authCode，返回整个输出供外部记录日志
+    if not auth_code:
+        return ali_output 
+        
     return auth_code
 
 def sign_in_account(username, password, account_index, total_accounts, retry_count=0):
@@ -656,44 +693,47 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
              result['oshwhub_status'] = '依赖缺失'
              return result
 
+        # 调用get_ali_auth_code，支持超时
+        auth_result = get_ali_auth_code(username, password, account_index)
+        
         auth_code = None
         
-        # 使用带超时的调用
-        ali_output, is_timeout = run_aliv3_with_timeout(username, password, timeout=60)
-        
-        if is_timeout:
-            log(f"账号 {account_index} - ❌ 登录依赖(AliV3) 响应超时(>60s)，跳过此账号")
-            log(f"AliV3 部分日志:\n{ali_output}")
+        # get_ali_auth_code 返回 None 表示超时
+        if auth_result is None:
             result['oshwhub_status'] = '登录超时'
-            return result # 返回失败，触发外部重试
-        
-        # 解析输出
-        lines = ali_output.split('\n')
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                
-                # 检查是否包含 authCode
-                if isinstance(data, dict) and data.get('success'):
-                    inner_data = data.get('data')
-                    if isinstance(inner_data, dict) and 'authCode' in inner_data:
-                        auth_code = inner_data['authCode']
-                        log(f"账号 {account_index} - ✅ 成功获取 authCode")
-                
-                # 检查是否包含错误码 10208（账密错误）
-                if isinstance(data, dict) and data.get('code') == 10208:
-                    msg = data.get('message', '账号或密码不正确')
-                    log(f"账号 {account_index} - ❌ 检测到账号或密码错误，跳过此账号 ({msg})")
-                    result['password_error'] = True
-                    result['oshwhub_status'] = '密码错误'
-                    return result
-                    
-            except json.JSONDecodeError:
-                continue
-        
+            return result
+            
+        if isinstance(auth_result, str) and len(auth_result) > 100:
+            # 说明返回的是日志内容，未提取到 authCode
+            ali_output = auth_result
+            
+            # 检查是否包含错误码 10208（账密错误）
+            is_pwd_error = False
+            for line in ali_output.split('\n'):
+                try:
+                    data = json.loads(line.strip())
+                    if isinstance(data, dict) and data.get('code') == 10208:
+                        msg = data.get('message', '账号或密码不正确')
+                        log(f"账号 {account_index} - ❌ 检测到账号或密码错误，跳过此账号 ({msg})")
+                        result['password_error'] = True
+                        result['oshwhub_status'] = '密码错误'
+                        is_pwd_error = True
+                        break
+                except:
+                    continue
+            
+            if is_pwd_error:
+                return result
+            else:
+                log("❌ 登录脚本未返回 AuthCode，输出如下：")
+                log(ali_output)
+                result['oshwhub_status'] = '登录失败'
+                return result
+        else:
+            # 成功获取 authCode
+            auth_code = auth_result
+            log(f"账号 {account_index} - ✅ 成功获取 authCode")
+
         # 判断登录结果
         if auth_code:
             # 拼接 URL 并跳转
@@ -703,20 +743,13 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             
             # 等待登录成功 (通过检测URL或页面元素)
             try:
-                # 等待页面加载且没有 error 提示，通常登录成功会跳转或停留在 oshwhub.com
+                # 等待页面加载且没有 error 提示
                 WebDriverWait(driver, 20).until(
                     lambda d: "oshwhub.com" in d.current_url and "code=" not in d.current_url
                 )
                 log(f"账号 {account_index} - ✅ 登录跳转成功")
             except Exception:
                 log(f"账号 {account_index} - ⚠ 登录跳转超时或未检测到预期URL，尝试继续后续流程...")
-
-        else:
-            # 既没有 authCode 也没有密码错误信息
-            log("❌登录脚本异常：")
-            log(ali_output)  # 输出 AliV3 的全部内容
-            result['oshwhub_status'] = '登录脚本异常'
-            return result # 返回失败，触发外部重试
 
         # 3. 获取用户昵称
         time.sleep(2) # 稍作等待确保 Cookie 生效
@@ -822,9 +855,16 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
         
         # 重新获取 AuthCode
         log(f"账号 {account_index} - 正在重新调用 AliV3 获取 m.jlc.com 登录凭证...")
-        auth_code_jlc = get_ali_auth_code(username, password)
+        auth_result_jlc = get_ali_auth_code(username, password, account_index)
         
-        if auth_code_jlc:
+        if auth_result_jlc is None:
+             log(f"账号 {account_index} - ❌ m.jlc.com 登录超时")
+             result['jindou_status'] = '登录超时'
+        elif isinstance(auth_result_jlc, str) and len(auth_result_jlc) > 100:
+             log(f"账号 {account_index} - ❌ m.jlc.com 登录失败，无法获取 AuthCode")
+             result['jindou_status'] = 'AuthCode获取失败'
+        else:
+            auth_code_jlc = auth_result_jlc
             log(f"账号 {account_index} - ✅ 成功获取 m.jlc.com 登录 authCode")
             
             # 使用 JS 进行登录
@@ -898,9 +938,6 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             else:
                 log(f"账号 {account_index} - ❌ m.jlc.com 登录接口返回失败")
                 result['jindou_status'] = '登录失败'
-        else:
-            log(f"账号 {account_index} - ❌ 获取 m.jlc.com authCode 失败")
-            result['jindou_status'] = 'AuthCode获取失败'
 
     except Exception as e:
         log(f"账号 {account_index} - ❌ 程序执行错误: {e}")
