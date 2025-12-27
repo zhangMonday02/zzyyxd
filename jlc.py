@@ -18,18 +18,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from serverchan_sdk import sc_send
 
-# ==========================================
 # 修复 Python 3.7 在 CI 环境下的 platform Bug
-# ==========================================
 try:
     platform.system()
 except TypeError:
     print("⚠ 检测到 Python 3.7 platform Bug，正在应用补丁...")
     platform.system = lambda: 'Linux'
 
-# ==========================================
 # 带重试机制的 AliV3 导入逻辑
-# ==========================================
 AliV3 = None
 max_import_retries = 5
 for attempt in range(max_import_retries):
@@ -483,7 +479,7 @@ def click_gift_buttons(driver, account_index):
                 if last_day:
                     driver.refresh()
                     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(12)
+                    time.sleep(10)
                 
             except Exception as e:
                 log(f"账号 {account_index} - ⚠ 无法点击7天好礼: {e}")
@@ -623,7 +619,7 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
 
     try:
         # 1. 登录流程
-        log(f"账号 {account_index} - 正在调用 登录(AliV3) 脚本进行登录...")
+        log(f"账号 {account_index} - 正在调用 登录(AliV3) 依赖进行登录...")
         
         # 确保 AliV3 已加载
         if AliV3 is None:
@@ -660,9 +656,9 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                     inner_data = data.get('data')
                     if isinstance(inner_data, dict) and 'authCode' in inner_data:
                         auth_code = inner_data['authCode']
-                        log(f"账号 {account_index} - ✅ 成功获取 authCode: {auth_code}")
+                        log(f"账号 {account_index} - ✅ 成功获取 authCode")
                 
-                # 检查是否包含错误码 10208
+                # 检查是否包含错误码 10208（账密错误）
                 if isinstance(data, dict) and data.get('code') == 10208:
                     msg = data.get('message', '账号或密码不正确')
                     log(f"账号 {account_index} - ❌ 检测到账号或密码错误，跳过此账号 ({msg})")
