@@ -231,7 +231,7 @@ class AliV3:
 
         headers = {
             'secretkey': '65363666636131642d356262332d343831352d383731382d666139336237636539656434',
-            'x-jlc-clientuuid': 'f08ffe1e-81aa-4ea1-9688-1d27a5a13e8b-1766884262505',',
+            'x-jlc-clientuuid': 'f08ffe1e-81aa-4ea1-9688-1d27a5a13e8b-1766884262505',
         }
 
         captcha_verify_param = {
@@ -419,6 +419,7 @@ if __name__ == '__main__':
     else:
         print("用法: python AliV3.py <username> <password>")
         print("示例: python AliV3.py 13800138000 MyPassword123")
+
 
 
 
