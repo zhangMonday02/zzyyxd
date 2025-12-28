@@ -23,9 +23,6 @@ def main():
     # 添加 User-Agent 防止被简单的反爬虫拦截
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # [新增] 开启性能日志，以便捕获网络请求头 (Headers)
-    chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-    
     # 初始化 Driver
     try:
         driver = webdriver.Chrome(options=chrome_options)
@@ -111,77 +108,12 @@ def main():
 
         # 循环结束后的处理
         if lsid_value:
-            # -----------------------------------------------------------
-            # [新增功能] 获取 cookies1 和 headers1
-            # -----------------------------------------------------------
-            log("正在提取额外的 Cookies 和 Headers 信息...")
-
-            # 1. 获取 Cookies1
-            # 目标: 'device_id', '__sameSiteCheck__', '_c_WBKFRo', '_nb_ioWEgULi'
-            target_cookies_names = ['device_id', '__sameSiteCheck__', '_c_WBKFRo', '_nb_ioWEgULi']
-            cookies1_data = {}
-            
-            for name in target_cookies_names:
-                c = driver.get_cookie(name)
-                # 如果 cookie 存在取 value，否则为空字符串
-                cookies1_data[name] = c.get('value', '') if c else ''
-
-            # 2. 获取 Headers1
-            # 目标: 'secretkey', 'x-jlc-clientuuid'
-            # 方法: 从 Performance Log 中解析 Network.requestWillBeSent
-            headers1_data = {
-                'secretkey': '',
-                'x-jlc-clientuuid': ''
-            }
-            
-            # 获取性能日志
-            logs = driver.get_log('performance')
-            for entry in logs:
-                try:
-                    message = json.loads(entry['message'])['message']
-                    if message['method'] == 'Network.requestWillBeSent':
-                        params = message.get('params', {})
-                        request = params.get('request', {})
-                        headers = request.get('headers', {})
-                        
-                        # Headers 可能是大小写混合的，转为小写进行查找
-                        lower_headers = {k.lower(): v for k, v in headers.items()}
-                        
-                        # 查找目标 header，找到任意一个非空的即可更新
-                        if 'secretkey' in lower_headers:
-                            headers1_data['secretkey'] = lower_headers['secretkey']
-                        
-                        if 'x-jlc-clientuuid' in lower_headers:
-                            headers1_data['x-jlc-clientuuid'] = lower_headers['x-jlc-clientuuid']
-                            
-                except Exception:
-                    continue
-            
-            # -----------------------------------------------------------
-            # 输出部分
-            # -----------------------------------------------------------
-            
-            # 输出 cookies1
-            print("cookies1 = {")
-            for k, v in cookies1_data.items():
-                print(f"    '{k}': '{v}',")
-            print("}")
-            print("")
-
-            # 输出 headers1
-            print("headers1 = {")
-            for k, v in headers1_data.items():
-                print(f"    '{k}': '{v}',")
-            print("}")
-            print("")
-
-            # 原有输出 (改名为 cookies2 和 headers2)
-            print("cookies2 = {")
+            # 6. 成功获取，按格式输出到 sys.stdout
+            print("cookies = {")
             print(f"    'lsId': '{lsid_value}',")
             print("}")
-            print("headers2 = {")
+            print("headers = {")
             print("}")
-            
             sys.exit(0)
         else:
             # 3次都没有成功
