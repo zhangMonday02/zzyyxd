@@ -745,8 +745,12 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                 # 检查是否包含错误码 10208（账密错误）
                 is_pwd_error = False
                 for line in ali_output.split('\n'):
+                    line = line.strip()
+                    # 尝试提取 JSON 部分，应对带前缀的情况
+                    if not line.startswith('{') and '{' in line:
+                        line = line[line.find('{'):]
                     try:
-                        data = json.loads(line.strip())
+                        data = json.loads(line)
                         if isinstance(data, dict) and data.get('code') == 10208:
                             is_pwd_error = True
                             break
