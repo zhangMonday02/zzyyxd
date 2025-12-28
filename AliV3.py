@@ -226,12 +226,12 @@ class AliV3:
         import requests
 
         cookies = {
-            'device_id': 'c7d0a5f4b554477fae0e1ba29f84fb63',
+            'device_id': '28f2f55eb5544910b976a1cd1fc24883',
         }
 
         headers = {
-            'secretkey': '35616236663038352d643366382d343131662d396239622d366439643132653639373764',
-            'x-jlc-clientuuid': '445de653-7a24-4242-88dd-0878479726aa-1766237894098',
+            'secretkey': '65363666636131642d356262332d343831352d383731382d666139336237636539656434',
+            'x-jlc-clientuuid': 'f08ffe1e-81aa-4ea1-9688-1d27a5a13e8b-1766884262505',',
         }
 
         captcha_verify_param = {
@@ -419,5 +419,6 @@ if __name__ == '__main__':
     else:
         print("用法: python AliV3.py <username> <password>")
         print("示例: python AliV3.py 13800138000 MyPassword123")
+
 
 
