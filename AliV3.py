@@ -227,6 +227,7 @@ class AliV3:
 
         cookies = {
             'device_id': '28f2f55eb5544910b976a1cd1fc24883',
+            '_c_WBKFRo': 'CsiMNWyfYFMZdBoomqdorgSYKRnFoj0QFoaEOyzr'
         }
 
         headers = {
@@ -419,6 +420,7 @@ if __name__ == '__main__':
     else:
         print("用法: python AliV3.py <username> <password>")
         print("示例: python AliV3.py 13800138000 MyPassword123")
+
 
 
 
