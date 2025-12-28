@@ -1066,8 +1066,10 @@ def push_summary():
             response = requests.get(url, params=params)
             if response.status_code == 200:
                 log("Telegram-日志已推送")
-        except:
-            pass  # 静默失败
+            else:
+                log(f"Telegram-推送失败: {response.text}")
+        except Exception as e:
+            log(f"Telegram-推送异常: {e}")
 
     # 企业微信 (WeChat Work)
     wechat_webhook_key = os.getenv('WECHAT_WEBHOOK_KEY')
@@ -1081,8 +1083,10 @@ def push_summary():
             response = requests.post(url, json=body)
             if response.status_code == 200:
                 log("企业微信-日志已推送")
-        except:
-            pass
+            else:
+                log(f"企业微信-推送失败: {response.text}")
+        except Exception as e:
+            log(f"企业微信-推送异常: {e}")
 
     # 钉钉 (DingTalk)
     dingtalk_webhook = os.getenv('DINGTALK_WEBHOOK')
@@ -1096,8 +1100,10 @@ def push_summary():
             response = requests.post(url, json=body)
             if response.status_code == 200:
                 log("钉钉-日志已推送")
-        except:
-            pass
+            else:
+                log(f"钉钉-推送失败: {response.text}")
+        except Exception as e:
+            log(f"钉钉-推送异常: {e}")
 
     # PushPlus
     pushplus_token = os.getenv('PUSHPLUS_TOKEN')
@@ -1108,8 +1114,10 @@ def push_summary():
             response = requests.post(url, json=body)
             if response.status_code == 200:
                 log("PushPlus-日志已推送")
-        except:
-            pass
+            else:
+                log(f"PushPlus-推送失败: {response.text}")
+        except Exception as e:
+            log(f"PushPlus-推送异常: {e}")
 
     # Server酱
     serverchan_sckey = os.getenv('SERVERCHAN_SCKEY')
@@ -1120,8 +1128,10 @@ def push_summary():
             response = requests.post(url, data=body)
             if response.status_code == 200:
                 log("Server酱-日志已推送")
-        except:
-            pass
+            else:
+                log(f"Server酱-推送失败: {response.text}")
+        except Exception as e:
+            log(f"Server酱-推送异常: {e}")
 
     # Server酱3
     serverchan3_sckey = os.getenv('SERVERCHAN3_SCKEY') 
@@ -1134,9 +1144,9 @@ def push_summary():
             if response.get("code") == 0:  # 新版成功返回 code=0
                 log("Server酱3-日志已推送")
             else:
-                log(f"Server酱推送失败: {response.get('message')}")                
+                log(f"Server酱3-推送失败: {response}")                
         except Exception as e:
-            log(f"Server酱推送异常: {str(e)}")    
+            log(f"Server酱3-推送异常: {str(e)}")    
 
     # 酷推 (CoolPush)
     coolpush_skey = os.getenv('COOLPUSH_SKEY')
@@ -1146,8 +1156,10 @@ def push_summary():
             response = requests.get(url)
             if response.status_code == 200:
                 log("酷推-日志已推送")
-        except:
-            pass
+            else:
+                log(f"酷推-推送失败: {response.text}")
+        except Exception as e:
+            log(f"酷推-推送异常: {e}")
 
     # 自定义API
     custom_webhook = os.getenv('CUSTOM_WEBHOOK')
@@ -1157,8 +1169,10 @@ def push_summary():
             response = requests.post(custom_webhook, json=body)
             if response.status_code == 200:
                 log("自定义API-日志已推送")
-        except:
-            pass
+            else:
+                log(f"自定义API-推送失败: {response.text}")
+        except Exception as e:
+            log(f"自定义API-推送异常: {e}")
 
 def main():
     global in_summary
