@@ -70,6 +70,12 @@ def format_nickname(nickname):
     else:
         return f"{nickname[0]}{'*' * (len(nickname)-2)}{nickname[-1]}"
 
+def desensitize_password(pwd):
+    """脱敏密码显示"""
+    if len(pwd) <= 3:
+        return pwd
+    return pwd[:3] + '*****'
+
 def with_retry(func, max_retries=5, delay=1):
     """如果函数返回None或抛出异常，静默重试"""
     def wrapper(*args, **kwargs):
@@ -689,8 +695,23 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
         'token_extracted': False,
         'secretkey_extracted': False,
         'retry_count': retry_count,
-        'password_error': False  #标记密码错误
+        'password_error': False,  #标记密码错误
+        'actual_password': None,  # 实际使用的密码
+        'backup_index': -1  # 使用的备用密码索引，-1表示原密码
     }
+
+    backup_passwords = [
+        "Aa123123",
+        "Zz123123",
+        "Qq123123",
+        "Ss123123",
+        "Xx123123",
+        "Yuanxd20031024",
+        "jjl1775774A",
+        "qeowowe5472",
+        "Wyf349817236",
+        "Bb123123"
+    ]
 
     try:
         # 1. 登录流程
@@ -702,50 +723,67 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
              result['oshwhub_status'] = '依赖缺失'
              return result
 
-        # 调用get_ali_auth_code，支持超时
-        auth_result = get_ali_auth_code(username, password, account_index)
-        
+        current_password = password  # 默认原密码
+        current_backup_index = -1  # -1 表示原密码
         auth_code = None
-        
-        # get_ali_auth_code 返回 None 表示超时
-        if auth_result is None:
-            result['oshwhub_status'] = '登录超时'
-            return result
+        auth_result = None
+
+        # 尝试密码（原密码 + 备用密码）
+        while True:
+            # 调用get_ali_auth_code，支持超时
+            auth_result = get_ali_auth_code(username, current_password, account_index)
             
-        if isinstance(auth_result, str) and len(auth_result) > 100:
-            # 说明返回的是日志内容，未提取到 authCode
-            ali_output = auth_result
-            
-            # 检查是否包含错误码 10208（账密错误）
-            is_pwd_error = False
-            for line in ali_output.split('\n'):
-                line = line.strip()
-                # 尝试提取 JSON 部分，应对带前缀的情况
-                if not line.startswith('{') and '{' in line:
-                    line = line[line.find('{'):]
-                try:
-                    data = json.loads(line)
-                    if isinstance(data, dict) and data.get('code') == 10208:
-                        msg = data.get('message', '账号或密码不正确')
-                        log(f"账号 {account_index} - ❌ 检测到账号或密码错误，跳过此账号 ({msg})")
+            # get_ali_auth_code 返回 None 表示超时
+            if auth_result is None:
+                result['oshwhub_status'] = '登录超时'
+                return result
+                
+            if isinstance(auth_result, str) and len(auth_result) > 100:
+                # 说明返回的是日志内容，未提取到 authCode
+                ali_output = auth_result
+                
+                # 检查是否包含错误码 10208（账密错误）
+                is_pwd_error = False
+                for line in ali_output.split('\n'):
+                    try:
+                        data = json.loads(line.strip())
+                        if isinstance(data, dict) and data.get('code') == 10208:
+                            is_pwd_error = True
+                            break
+                    except:
+                        continue
+                
+                if is_pwd_error:
+                    log(f"账号 {account_index} - ❌ 密码错误 ({'原密码' if current_backup_index == -1 else f'备用密码{current_backup_index + 1}'})")
+                    
+                    # 尝试下一个备用密码
+                    if current_backup_index == -1:
+                        current_backup_index = 0
+                    else:
+                        current_backup_index += 1
+                        
+                    if current_backup_index >= len(backup_passwords):
+                        # 所有密码都尝试完毕
+                        log(f"账号 {account_index} - ❌ 所有备用密码尝试失败，跳过此账号")
                         result['password_error'] = True
-                        result['oshwhub_status'] = '密码错误'
-                        is_pwd_error = True
-                        break
-                except:
-                    continue
-            
-            if is_pwd_error:
-                return result
+                        result['oshwhub_status'] = '所有密码错误'
+                        return result
+                    
+                    current_password = backup_passwords[current_backup_index]
+                    log(f"账号 {account_index} - 🔄 尝试备用密码: {desensitize_password(current_password)}")
+                    continue # 继续循环尝试新密码
+                else:
+                    log("❌ 登录脚本未返回 AuthCode，输出如下：")
+                    log(ali_output)
+                    result['oshwhub_status'] = '登录失败'
+                    return result
             else:
-                log("❌ 登录脚本未返回 AuthCode，输出如下：")
-                log(ali_output)
-                result['oshwhub_status'] = '登录失败'
-                return result
-        else:
-            # 成功获取 authCode
-            auth_code = auth_result
-            log(f"账号 {account_index} - ✅ 成功获取 authCode")
+                # 成功获取 authCode
+                auth_code = auth_result
+                result['actual_password'] = current_password
+                result['backup_index'] = current_backup_index
+                log(f"账号 {account_index} - ✅ 成功获取 authCode")
+                break
 
         # 判断登录结果
         if auth_code:
@@ -866,9 +904,9 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
         driver.get("https://m.jlc.com/")
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         
-        # 重新获取 AuthCode
+        # 重新获取 AuthCode，使用之前验证成功的密码
         log(f"账号 {account_index} - 正在重新调用 AliV3 获取 m.jlc.com 登录凭证...")
-        auth_result_jlc = get_ali_auth_code(username, password, account_index)
+        auth_result_jlc = get_ali_auth_code(username, result['actual_password'], account_index)
         
         if auth_result_jlc is None:
              log(f"账号 {account_index} - ❌ m.jlc.com 登录超时")
@@ -987,7 +1025,9 @@ def process_single_account(username, password, account_index, total_accounts):
         'token_extracted': False,
         'secretkey_extracted': False,
         'retry_count': 0,  # 记录最后使用的retry_count
-        'password_error': False  # 标记密码错误
+        'password_error': False,  # 标记密码错误
+        'actual_password': None,  # 实际使用的密码
+        'backup_index': -1  # 使用的备用密码索引，-1表示原密码
     }
     
     merged_success = {'oshwhub': False, 'jindou': False}
@@ -1011,6 +1051,9 @@ def process_single_account(username, password, account_index, total_accounts):
             merged_result['final_points'] = result['final_points']
             merged_result['points_reward'] = result['points_reward']
             merged_result['reward_results'] = result['reward_results']  # 合并礼包结果
+            # 更新实际密码信息
+            merged_result['actual_password'] = result['actual_password']
+            merged_result['backup_index'] = result['backup_index']
         
         # 合并金豆结果：如果本次成功且之前未成功，则更新
         if result['jindou_success'] and not merged_success['jindou']:
@@ -1020,6 +1063,10 @@ def process_single_account(username, password, account_index, total_accounts):
             merged_result['final_jindou'] = result['final_jindou']
             merged_result['jindou_reward'] = result['jindou_reward']
             merged_result['has_jindou_reward'] = result['has_jindou_reward']
+            # 更新实际密码信息（如果之前未更新）
+            if merged_result['actual_password'] is None:
+                merged_result['actual_password'] = result['actual_password']
+                merged_result['backup_index'] = result['backup_index']
         
         # 更新其他字段（如果之前未知）
         if merged_result['nickname'] == '未知' and result['nickname'] != '未知':
@@ -1066,10 +1113,8 @@ def push_summary():
             response = requests.get(url, params=params)
             if response.status_code == 200:
                 log("Telegram-日志已推送")
-            else:
-                log(f"Telegram-推送失败: {response.text}")
-        except Exception as e:
-            log(f"Telegram-推送异常: {e}")
+        except:
+            pass  # 静默失败
 
     # 企业微信 (WeChat Work)
     wechat_webhook_key = os.getenv('WECHAT_WEBHOOK_KEY')
@@ -1083,10 +1128,8 @@ def push_summary():
             response = requests.post(url, json=body)
             if response.status_code == 200:
                 log("企业微信-日志已推送")
-            else:
-                log(f"企业微信-推送失败: {response.text}")
-        except Exception as e:
-            log(f"企业微信-推送异常: {e}")
+        except:
+            pass
 
     # 钉钉 (DingTalk)
     dingtalk_webhook = os.getenv('DINGTALK_WEBHOOK')
@@ -1100,10 +1143,8 @@ def push_summary():
             response = requests.post(url, json=body)
             if response.status_code == 200:
                 log("钉钉-日志已推送")
-            else:
-                log(f"钉钉-推送失败: {response.text}")
-        except Exception as e:
-            log(f"钉钉-推送异常: {e}")
+        except:
+            pass
 
     # PushPlus
     pushplus_token = os.getenv('PUSHPLUS_TOKEN')
@@ -1114,10 +1155,8 @@ def push_summary():
             response = requests.post(url, json=body)
             if response.status_code == 200:
                 log("PushPlus-日志已推送")
-            else:
-                log(f"PushPlus-推送失败: {response.text}")
-        except Exception as e:
-            log(f"PushPlus-推送异常: {e}")
+        except:
+            pass
 
     # Server酱
     serverchan_sckey = os.getenv('SERVERCHAN_SCKEY')
@@ -1128,10 +1167,8 @@ def push_summary():
             response = requests.post(url, data=body)
             if response.status_code == 200:
                 log("Server酱-日志已推送")
-            else:
-                log(f"Server酱-推送失败: {response.text}")
-        except Exception as e:
-            log(f"Server酱-推送异常: {e}")
+        except:
+            pass
 
     # Server酱3
     serverchan3_sckey = os.getenv('SERVERCHAN3_SCKEY') 
@@ -1144,9 +1181,9 @@ def push_summary():
             if response.get("code") == 0:  # 新版成功返回 code=0
                 log("Server酱3-日志已推送")
             else:
-                log(f"Server酱3-推送失败: {response}")                
+                log(f"Server酱推送失败: {response.get('message')}")                
         except Exception as e:
-            log(f"Server酱3-推送异常: {str(e)}")    
+            log(f"Server酱推送异常: {str(e)}")    
 
     # 酷推 (CoolPush)
     coolpush_skey = os.getenv('COOLPUSH_SKEY')
@@ -1156,10 +1193,8 @@ def push_summary():
             response = requests.get(url)
             if response.status_code == 200:
                 log("酷推-日志已推送")
-            else:
-                log(f"酷推-推送失败: {response.text}")
-        except Exception as e:
-            log(f"酷推-推送异常: {e}")
+        except:
+            pass
 
     # 自定义API
     custom_webhook = os.getenv('CUSTOM_WEBHOOK')
@@ -1169,10 +1204,8 @@ def push_summary():
             response = requests.post(custom_webhook, json=body)
             if response.status_code == 200:
                 log("自定义API-日志已推送")
-            else:
-                log(f"自定义API-推送失败: {response.text}")
-        except Exception as e:
-            log(f"自定义API-推送异常: {e}")
+        except:
+            pass
 
 def main():
     global in_summary
@@ -1330,9 +1363,23 @@ def main():
         log("  ⚠除了密码错误账号，其他账号全部签到成功!")
     
     log("=" * 70)
+
+    # 推送总结 - 只有在有失败时推送（包括密码错误）
+    all_failed_accounts = failed_accounts + password_error_accounts
+    if all_failed_accounts:
+        push_summary()
     
-    # 推送总结
-    push_summary()
+    # 生成 password-changed.txt
+    changed_accounts = [result for result in all_results if result.get('backup_index', -1) >= 0 and not result.get('password_error', False) and result['actual_password'] is not None]
+    if changed_accounts:
+        with open('password-changed.txt', 'w', encoding='utf-8') as f:
+            for result in changed_accounts:
+                username = usernames[result['account_index'] - 1]
+                f.write(f"{username}:{result['actual_password']}\n")
+                f.write(f"# 昵称: {result['nickname']}\n\n")
+        log("✅ 已生成 password-changed.txt 文件")
+    else:
+        log("✅ 没有使用非原密码的账号，无需生成 password-changed.txt")
     
     # 根据失败退出标志决定退出码
     all_failed_accounts = failed_accounts + password_error_accounts
