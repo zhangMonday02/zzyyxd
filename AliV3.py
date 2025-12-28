@@ -28,7 +28,7 @@ class AliV3:
         self.DeviceConfig = None
         self.sign_key1 = "YSKfst7GaVkXwZYvVihJsKF9r89koz"
         self.sign_key2 = "fpOKzILEajkqgSpr9VvU98FwAgIRcX"
-        self.author = '古月'
+        self.author = '古月&zhangMonday'
         
         # 初始化账号密码变量，用于在 Sumbit_All 中重试时调用
         self.username = None
@@ -433,3 +433,4 @@ if __name__ == '__main__':
     else:
         print("用法: python AliV3.py <username> <password>")
         print("示例: python AliV3.py 13800138000 MyPassword123")
+
