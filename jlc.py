@@ -440,46 +440,7 @@ def is_first_day_of_month():
     """检查今天是否是当月1日"""
     return datetime.now().day == 30
 
-def execute_jlc_login_js(driver, auth_code, account_index):
-    """执行JLC统一的JS登录逻辑"""
-    login_js = """
-    var code = arguments[0];
-    var callback = arguments[1];
-    var formData = new FormData();
-    formData.append('code', code);
-    
-    fetch('/api/login/login-by-code', {
-        method: 'POST',
-        body: formData,
-        headers: {
-            'X-JLC-AccessToken': 'NONE'
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.code === 200 && data.data && data.data.accessToken) {
-            window.localStorage.setItem('X-JLC-AccessToken', data.data.accessToken);
-            callback(true);
-        } else {
-            console.error('Login failed:', data);
-            callback(false);
-        }
-    })
-    .catch(err => {
-        console.error('Login error:', err);
-        callback(false);
-    });
-    """
-    
-    try:
-        login_success = driver.execute_async_script(login_js, auth_code)
-    except Exception as e:
-        log(f"账号 {account_index} - ❌ 执行 JS 登录脚本出错: {e}")
-        login_success = False
-    
-    return login_success
-
-def run_exam_process(driver, account_index, username, password):
+def run_exam_process(driver, account_index):
     """
     运行立创题库答题流程
     返回: (success: bool, score: int, msg: str)
@@ -496,38 +457,38 @@ def run_exam_process(driver, account_index, username, password):
             # 2. 打开页面
             driver.get(exam_url)
             
-            # --- 增加登录步骤 开始 ---
-            # 为了确保有权限，这里重新执行一次登录流程
-            log(f"账号 {account_index} - 正在为答题页面执行 AliV3 登录...")
-            auth_result_exam = get_ali_auth_code(username, password, account_index)
+            # 3. 等待并点击开始答题按钮 (带刷新重试逻辑)
+            start_btn = None
+            max_refresh_limit = 10
             
-            if auth_result_exam and len(auth_result_exam) < 100: # 简单的长度检查排除错误日志
-                auth_code_exam = auth_result_exam
-                log(f"账号 {account_index} - ✅ 答题前获取 AuthCode 成功，正在执行 JS 登录...")
-                
-                # 在 member.jlc.com 域下执行登录 JS
-                if execute_jlc_login_js(driver, auth_code_exam, account_index):
-                    log(f"账号 {account_index} - ✅ 答题页登录 JS 执行成功，刷新页面以加载登录状态...")
-                    driver.refresh()
-                    # 等待刷新完成
-                    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(3) 
-                else:
-                    log(f"账号 {account_index} - ⚠ 答题页登录 JS 执行失败，尝试继续...")
-            else:
-                log(f"账号 {account_index} - ⚠ 答题前获取 AuthCode 失败，尝试直接寻找按钮...")
-            # --- 增加登录步骤 结束 ---
+            for refresh_count in range(max_refresh_limit + 1):
+                try:
+                    # 尝试寻找按钮，设置较短的等待时间，以便快速响应刷新需求
+                    start_btn = WebDriverWait(driver, 8).until(
+                        EC.element_to_be_clickable((By.ID, "startExamBtn"))
+                    )
+                    # 如果找到了，跳出刷新循环
+                    break
+                except TimeoutException:
+                    if refresh_count < max_refresh_limit:
+                        log(f"账号 {account_index} - ⚠ 未找到“开始答题”按钮，正在执行第 {refresh_count + 1} 次刷新...")
+                        driver.refresh()
+                        # 刷新后稍作等待，确保页面结构开始加载
+                        try:
+                            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                        except:
+                            pass
+                    else:
+                        log(f"账号 {account_index} - ❌ 经过 {max_refresh_limit} 次刷新仍未找到“开始答题”按钮")
             
-            # 3. 等待并点击开始答题按钮
-            try:
-                start_btn = WebDriverWait(driver, 20).until(
-                    EC.element_to_be_clickable((By.ID, "startExamBtn"))
-                )
-                start_btn.click()
-                log(f"账号 {account_index} - 已点击“开始答题”按钮，等待插件运行...")
-            except TimeoutException:
-                log(f"账号 {account_index} - ❌ 未找到“开始答题”按钮或加载超时，可能是登录状态未生效")
-                continue # 进入下一次重试
+            # 如果循环结束后仍未找到按钮
+            if not start_btn:
+                log(f"账号 {account_index} - ❌ 未找到“开始答题”按钮，当前页面URL: {driver.current_url}")
+                continue # 进入下一次大流程重试
+            
+            # 点击按钮
+            start_btn.click()
+            log(f"账号 {account_index} - 已点击“开始答题”按钮，等待插件运行...")
             
             # 4. & 5. 等待网页重定向并获取分数
             # 插件运行期间会重定向到答题页，脚本结束后重定向到分数页
@@ -1023,8 +984,41 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             auth_code_jlc = auth_result_jlc
             log(f"账号 {account_index} - ✅ 成功获取 m.jlc.com 登录 authCode")
             
-            # 使用统一封装的 JS 进行登录
-            login_success = execute_jlc_login_js(driver, auth_code_jlc, account_index)
+            # 使用 JS 进行登录
+            login_js = """
+            var code = arguments[0];
+            var callback = arguments[1];
+            var formData = new FormData();
+            formData.append('code', code);
+            
+            fetch('/api/login/login-by-code', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-JLC-AccessToken': 'NONE'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.code === 200 && data.data && data.data.accessToken) {
+                    window.localStorage.setItem('X-JLC-AccessToken', data.data.accessToken);
+                    callback(true);
+                } else {
+                    console.error('Login failed:', data);
+                    callback(false);
+                }
+            })
+            .catch(err => {
+                console.error('Login error:', err);
+                callback(false);
+            });
+            """
+            
+            try:
+                login_success = driver.execute_async_script(login_js, auth_code_jlc)
+            except Exception as e:
+                log(f"账号 {account_index} - ❌ 执行 JS 登录脚本出错: {e}")
+                login_success = False
             
             if login_success:
                 log(f"账号 {account_index} - ✅ m.jlc.com 登录接口调用成功")
@@ -1056,8 +1050,7 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                         
                         # 10. 如果金豆签到流程顺利（即登录状态正常）且今天是1号，执行立创题库答题
                         if trigger_exam:
-                            # 传入账号密码以供答题页面重新登录
-                            exam_success, exam_score, exam_msg = run_exam_process(driver, account_index, username, password)
+                            exam_success, exam_score, exam_msg = run_exam_process(driver, account_index)
                             result['exam_triggered'] = True
                             result['exam_success'] = exam_success
                             result['exam_score'] = exam_score
