@@ -437,7 +437,7 @@ def is_last_day_of_month():
 
 def is_first_day_of_month():
     """检查今天是否是每月1号"""
-    return datetime.now().day == 1
+    return datetime.now().day == 30
 
 def capture_reward_info(driver, account_index, gift_type):
     """抓取并输出奖励信息，返回礼包领取结果"""
