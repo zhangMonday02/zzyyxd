@@ -437,7 +437,7 @@ def is_last_day_of_month():
 
 def is_first_day_of_month():
     """检查今天是否是每月1号"""
-    return datetime.now().day == 30
+    return datetime.now().day == 1
 
 def capture_reward_info(driver, account_index, gift_type):
     """抓取并输出奖励信息，返回礼包领取结果"""
@@ -1082,6 +1082,15 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                 if access_token and secretkey:
                     log(f"账号 {account_index} - ✅ 成功提取 token 和 secretkey")
                     
+                    # 关键修改：手动设置 Cookie 以保证浏览器端的登录状态，防止 driver.get 跳转时丢失会话
+                    try:
+                        # 设置 Cookie，使其在跳转时生效
+                        driver.execute_script(f"document.cookie = 'X-JLC-AccessToken={access_token}; path=/; domain=.jlc.com';")
+                        driver.execute_script(f"document.cookie = 'accessToken={access_token}; path=/; domain=.jlc.com';")
+                        log(f"账号 {account_index} - 已同步 Token 到 Cookie，防止跳转丢失登录状态")
+                    except Exception as e:
+                        log(f"账号 {account_index} - ⚠ 设置 Cookie 失败: {e}")
+
                     jlc_client = JLCClient(access_token, secretkey, account_index, driver)
                     jindou_success = jlc_client.execute_full_process()
                     
