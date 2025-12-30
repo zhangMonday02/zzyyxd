@@ -164,6 +164,68 @@ def extract_secretkey_from_devtools(driver):
     
     return secretkey
 
+def get_customer_code(driver, account_index):
+    """从个人中心页面提取客编信息"""
+    try:
+        # 跳转到个人中心页面
+        driver.get("https://m.jlc.com/pages/my/index")
+        log(f"账号 {account_index} - 已跳转到个人中心页面")
+        
+        # 等待页面加载
+        time.sleep(2)
+        
+        # 尝试定位客编元素
+        # 使用多种选择器定位客编
+        selectors = [
+            ".cust-code",  # 类选择器
+            "[class*='cust-code']",  # 包含cust-code的类
+            "span.cust-code",  # span标签
+            "[data-v-733edb57].cust-code",  # 带data-v属性的
+            "//span[contains(@class, 'cust-code')]",  # XPath
+            "//span[contains(text(), '客编')]"  # XPath文本包含
+        ]
+        
+        cust_code = None
+        
+        for selector in selectors:
+            try:
+                if selector.startswith("//"):
+                    # XPath选择器
+                    element = driver.find_element(By.XPATH, selector)
+                else:
+                    # CSS选择器
+                    element = driver.find_element(By.CSS_SELECTOR, selector)
+                
+                cust_code = element.text.strip()
+                if cust_code and "客编" in cust_code:
+                    log(f"账号 {account_index} - ✅ 成功提取到客编信息: {cust_code}")
+                    return cust_code
+            except:
+                continue
+        
+        # 如果上述选择器都失败，尝试通过更通用的方式查找
+        try:
+            # 查找所有包含"客编"的文本
+            page_source = driver.page_source
+            if "客编" in page_source:
+                # 使用正则表达式查找客编信息
+                import re
+                pattern = r'客编[A-Za-z0-9]+'
+                matches = re.findall(pattern, page_source)
+                if matches:
+                    cust_code = matches[0]
+                    log(f"账号 {account_index} - ✅ 通过正则匹配到客编信息: {cust_code}")
+                    return cust_code
+        except Exception as e:
+            log(f"账号 {account_index} - ⚠ 正则匹配客编失败: {e}")
+        
+        log(f"账号 {account_index} - ⚠ 无法找到客编信息")
+        return None
+        
+    except Exception as e:
+        log(f"账号 {account_index} - ❌ 获取客编信息出错: {e}")
+        return None
+
 def get_oshwhub_points(driver, account_index):
     """获取开源平台积分数量"""
     max_retries = 5
@@ -674,6 +736,7 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
     result = {
         'account_index': account_index,
         'nickname': '未知',
+        'customer_code': '未知',  # 新增：客编信息
         'oshwhub_status': '未知',
         'oshwhub_success': False,
         'initial_points': 0,      # 签到前积分
@@ -980,6 +1043,14 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             if login_success:
                 log(f"账号 {account_index} - ✅ m.jlc.com 登录接口调用成功")
                 
+                # === 新增：跳转到个人中心并提取客编信息 ===
+                customer_code = get_customer_code(driver, account_index)
+                if customer_code:
+                    result['customer_code'] = customer_code
+                else:
+                    result['customer_code'] = '未找到'
+                
+                # 继续原有流程
                 navigate_and_interact_m_jlc(driver, account_index)
                 
                 access_token = extract_token_from_local_storage(driver)
@@ -1033,6 +1104,7 @@ def process_single_account(username, password, account_index, total_accounts):
     merged_result = {
         'account_index': account_index,
         'nickname': '未知',
+        'customer_code': '未知',  # 新增：客编信息
         'oshwhub_status': '未知',
         'oshwhub_success': False,
         'initial_points': 0,
@@ -1085,6 +1157,9 @@ def process_single_account(username, password, account_index, total_accounts):
         # 更新其他字段（如果之前未知）
         if merged_result['nickname'] == '未知' and result['nickname'] != '未知':
             merged_result['nickname'] = result['nickname']
+        
+        if merged_result['customer_code'] == '未知' and result.get('customer_code') not in ['未知', '未找到']:
+            merged_result['customer_code'] = result.get('customer_code', '未知')
         
         if not merged_result['token_extracted'] and result['token_extracted']:
             merged_result['token_extracted'] = result['token_extracted']
@@ -1294,6 +1369,7 @@ def main():
     for result in all_results:
         account_index = result['account_index']
         nickname = result.get('nickname', '未知')
+        customer_code = result.get('customer_code', '未知')
         retry_count = result.get('retry_count', 0)
         password_error = result.get('password_error', False)
         
@@ -1317,6 +1393,7 @@ def main():
             log("  └── 状态: ❌ 账号或密码错误，跳过此账号")
         else:
             log(f"账号 {account_index} ({nickname}) 详细结果:{retry_label}")
+            log(f"  ├── 客编信息: {customer_code}")
             log(f"  ├── 开源平台: {result['oshwhub_status']}")
             
             # 显示积分变化
