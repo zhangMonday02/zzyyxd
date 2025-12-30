@@ -653,7 +653,9 @@ def run_exam_process(driver, account_index):
     exam_url = "https://m.jlc.com/mobile/index.html?source=jlc_mobile_app&clientType=WEB#/exam-center/exam-list"
     max_exam_retries = 3
     final_score = 0
-    
+    success = False
+    fail_reason = ""
+
     wait = WebDriverWait(driver, 15)
     
     for attempt in range(max_exam_retries + 1):
@@ -665,74 +667,35 @@ def run_exam_process(driver, account_index):
             log(f"账号 {account_index} - 正在打开考试列表...")
             driver.get(exam_url)
             
-            # 等待页面加载，给予充分时间渲染
-            time.sleep(5)
-            try:
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "button")))
-            except:
-                pass
-
             # 2. 点击列表中的"开始"按钮
-            # 策略：查找所有按钮，看文本
-            start_btn = None
+            # <button data-v-1bfda8ef class=active> 开始 </button>
             try:
-                # 获取所有按钮
-                buttons = driver.find_elements(By.TAG_NAME, "button")
-                for btn in buttons:
-                    if "开始" in btn.text:
-                        start_btn = btn
-                        break
-                
-                if not start_btn:
-                    # 尝试 XPath 模糊匹配
-                    start_btn = driver.find_element(By.XPATH, "//*[contains(text(), '开始') and contains(@class, 'active')]")
-            except:
-                pass
-            
-            if start_btn:
-                try:
-                    # 使用 JS 点击防止遮挡
-                    driver.execute_script("arguments[0].scrollIntoView();", start_btn)
-                    driver.execute_script("arguments[0].click();", start_btn)
-                    log(f"账号 {account_index} - 已点击考试列表'开始'按钮")
-                except Exception as e:
-                    log(f"账号 {account_index} - 点击'开始'按钮失败: {e}")
-                    raise e
-            else:
-                # 检查页面是否有特殊提示
-                try:
-                    body_text = driver.find_element(By.TAG_NAME, "body").text
-                    if "暂无考试" in body_text or "没有更多数据" in body_text:
-                        log(f"账号 {account_index} - 页面显示暂无考试，跳过答题")
-                        return True, 0, "暂无考试"
-                    if "已完成" in body_text or "查看成绩" in body_text:
-                        log(f"账号 {account_index} - 页面显示已完成/查看成绩，跳过答题")
-                        return True, 60, "已完成(跳过)"
-                    
-                    # 截取一部分源码用于调试
-                    page_source_snippet = driver.page_source[:500].replace('\n', '')
-                    log(f"账号 {account_index} - 未找到'开始'按钮，页面可能未正确加载。源码片段: {page_source_snippet}")
-                except:
-                    pass
-                
-                raise Exception("未找到开始按钮")
+                start_btn = wait.until(EC.element_to_be_clickable(
+                    (By.XPATH, "//button[contains(text(), '开始') and contains(@class, 'active')]")
+                ))
+                time.sleep(2) # 等待页面稳定
+                start_btn.click()
+                log(f"账号 {account_index} - 已点击考试列表'开始'按钮")
+            except Exception as e:
+                log(f"账号 {account_index} - 未找到考试列表'开始'按钮: {e}")
+                raise e
 
             # 3. 等待重定向后点击"开始答题"按钮
             # <button type="button" class="btn btn-primary btn-fix" id="startExamBtn" ...>
             try:
-                # 等待 id="startExamBtn" 出现
-                real_start_btn = wait.until(EC.presence_of_element_located((By.ID, "startExamBtn")))
-                
-                # 确保可见
-                time.sleep(1) 
+                # 等待页面变化，或者直接等待按钮出现
+                real_start_btn = wait.until(EC.element_to_be_clickable(
+                    (By.ID, "startExamBtn")
+                ))
+                time.sleep(2) # 等待网页稳定
                 log(f"账号 {account_index} - 找到'开始答题'按钮，点击并开始计时...")
                 
-                # JS 点击
-                driver.execute_script("arguments[0].click();", real_start_btn)
+                # 点击开始答题后网页重定向开始计时
+                real_start_btn.click()
                 start_time = time.time()
                 
             except Exception as e:
-                log(f"账号 {account_index} - 未找到'开始答题'按钮(startExamBtn): {e}")
+                log(f"账号 {account_index} - 未找到'开始答题'按钮: {e}")
                 raise e
 
             # 4. 等待插件运行和网页重定向
@@ -748,36 +711,38 @@ def run_exam_process(driver, account_index):
                     # 检查是否出现分数元素 <span class="score">
                     score_element = driver.find_elements(By.CSS_SELECTOR, "span.score")
                     if score_element and score_element[0].is_displayed():
-                        # 确保分数不为空
-                        score_text = score_element[0].text.strip()
-                        if score_text.isdigit():
-                            final_score = int(score_text)
-                            exam_finished = True
-                            log(f"账号 {account_index} - ✅ 答题结束，检测到分数: {final_score}")
-                            break
+                        exam_finished = True
+                        current_score_text = score_element[0].text
+                        final_score = int(current_score_text)
+                        log(f"账号 {account_index} - ✅ 答题结束，检测到分数: {final_score}")
+                        break
                 except:
                     pass
                 time.sleep(2)
             
             if not exam_finished:
                 log(f"账号 {account_index} - ❌ 答题超时 (超过3分钟未检测到分数页面)")
+                fail_reason = "脚本超过3分钟未执行成功"
                 # 超时算失败，进入重试
                 continue
             
             # 5. 检查分数
             if final_score > 60:
                 log(f"账号 {account_index} - 🎉 题库签到成功！分数: {final_score}")
+                success = True
                 return True, final_score, "成功"
             else:
                 log(f"账号 {account_index} - ❌ 分数低于或等于60分 ({final_score})，准备重试...")
+                fail_reason = f"最高得分{final_score}"
                 continue
 
         except Exception as e:
             log(f"账号 {account_index} - ⚠ 答题流程发生异常: {e}")
+            fail_reason = f"执行异常: {str(e)[:50]}"
             time.sleep(3)
     
     log(f"账号 {account_index} - ❌ 题库答题失败 (已重试{max_exam_retries}次)")
-    return False, final_score, "多次重试失败"
+    return False, final_score, fail_reason
 
 def sign_in_account(username, password, account_index, total_accounts, retry_count=0):
     """为单个账号执行完整的签到流程"""
@@ -798,8 +763,6 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
     chrome_options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图像加载
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    # 添加移动端 UA，确保 m.jlc.com 加载正确的移动端视图
-    chrome_options.add_argument('--user-agent=Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
     
     # 如果是1号，加载答题插件
     extension_path = os.path.abspath("JLCTK.crx")
@@ -1033,7 +996,10 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             log(f"账号 {account_index} - ✅ 成功获取 m.jlc.com 登录 authCode")
             
             # 使用 JS 进行登录
-            # 修复：添加 credentials: 'include' 以支持 Cookie，补充 Headers，优先使用 uni.setStorageSync
+            # 修复：
+            # 1. 添加 credentials: 'include' 以确保存储登录 Cookie
+            # 2. 添加 X-JLC-ClientType 头部，模拟真实请求
+            # 3. 兼容 uni.setStorageSync 存储方式
             login_js = """
             var code = arguments[0];
             var callback = arguments[1];
@@ -1043,25 +1009,26 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             fetch('/api/login/login-by-code', {
                 method: 'POST',
                 body: formData,
-                credentials: 'include', // 关键修复：允许请求携带和设置 Cookie
+                credentials: 'include',
                 headers: {
                     'X-JLC-AccessToken': 'NONE',
-                    'X-JLC-ClientType': 'WEB', // 关键修复：补全客户端标识
-                    'X-JLC-ApplicationId': 'jlc-h5'
+                    'X-JLC-ClientType': 'WEB',
+                    'Accept': 'application/json, text/plain, */*'
                 }
             })
             .then(response => response.json())
             .then(data => {
                 if (data.code === 200 && data.data && data.data.accessToken) {
-                    // 关键修复：尝试调用页面原生的 uni 存储方法，以确保格式完全兼容
+                    var token = data.data.accessToken;
+                    // 优先使用 uni 的存储方法以确保应用状态同步
                     try {
                         if (window.uni && window.uni.setStorageSync) {
-                            window.uni.setStorageSync('X-JLC-AccessToken', data.data.accessToken);
+                            window.uni.setStorageSync('X-JLC-AccessToken', token);
                         } else {
-                            window.localStorage.setItem('X-JLC-AccessToken', data.data.accessToken);
+                            window.localStorage.setItem('X-JLC-AccessToken', token);
                         }
                     } catch (e) {
-                        window.localStorage.setItem('X-JLC-AccessToken', data.data.accessToken);
+                        window.localStorage.setItem('X-JLC-AccessToken', token);
                     }
                     callback(true);
                 } else {
@@ -1095,15 +1062,6 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
                 if access_token and secretkey:
                     log(f"账号 {account_index} - ✅ 成功提取 token 和 secretkey")
                     
-                    # 关键修改：手动设置 Cookie 以保证浏览器端的登录状态，防止 driver.get 跳转时丢失会话
-                    try:
-                        # 设置 Cookie，使其在跳转时生效
-                        driver.execute_script(f"document.cookie = 'X-JLC-AccessToken={access_token}; path=/; domain=.jlc.com';")
-                        driver.execute_script(f"document.cookie = 'accessToken={access_token}; path=/; domain=.jlc.com';")
-                        log(f"账号 {account_index} - 已同步 Token 到 Cookie，防止跳转丢失登录状态")
-                    except Exception as e:
-                        log(f"账号 {account_index} - ⚠ 设置 Cookie 失败: {e}")
-
                     jlc_client = JLCClient(access_token, secretkey, account_index, driver)
                     jindou_success = jlc_client.execute_full_process()
                     
