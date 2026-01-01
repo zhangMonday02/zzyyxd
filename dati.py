@@ -140,11 +140,25 @@ def send_request_via_browser(driver, url, method='POST', body=None):
 
 
 def perform_init_session(driver):
-    log(f"📡 初始化会话...")
-    response = send_request_via_browser(driver, "https://passport.jlc.com/api/cas/login/get-init-session", 'POST', {"appId": "JLC_PORTAL_PC", "clientType": "PC-WEB"})
-    if response and response.get('success') == True:
-        log("✅ 初始化会话成功")
-        return True
+    """执行 Session 初始化，带重试"""
+    for i in range(3):
+        log(f"📡 初始化会话 (Attempt {i+1})...")
+        try:
+            # 确保页面加载完成
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            
+            response = send_request_via_browser(driver, "https://passport.jlc.com/api/cas/login/get-init-session", 'POST', {"appId": "JLC_PORTAL_PC", "clientType": "PC-WEB"})
+            
+            if response and response.get('success') == True:
+                log("✅ 初始化会话成功")
+                return True
+            else:
+                log(f"⚠ 初始化失败: {response}")
+        except Exception as e:
+            log(f"⚠ 初始化异常: {e}")
+        
+        time.sleep(2)
+        
     return False
 
 
@@ -306,7 +320,12 @@ def process_single_account(username, password, account_index, total_accounts):
             driver = create_chrome_driver(with_extension=True)
             driver.get("https://passport.jlc.com")
             
-            if not perform_init_session(driver): raise Exception("Session初始化失败")
+            # Session初始化增加重试和等待
+            if not perform_init_session(driver): 
+                driver.quit()
+                time.sleep(2)
+                continue # 重试整个流程
+                
             ticket = call_aliv3min_with_timeout()
             if not ticket: raise Exception("Ticket获取失败")
             
