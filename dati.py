@@ -29,13 +29,13 @@ def log(msg):
     print(full_msg, flush=True)
 
 # -------------------------------------------------------------------------
-# 核心答题脚本 (加强版：循环检测 + 原生点击 + 延迟蒙题)
+# 核心答题脚本 (加强调试版)
 # -------------------------------------------------------------------------
 AUTO_ANSWER_SCRIPT = r"""
 (function () {
     console.log("🚀 [AutoAnswer] 脚本注入成功，开始初始化...");
 
-    /* ================= MD5 算法 (保持不变) ================= */
+    /* ================= MD5 算法 ================= */
     function safeAdd (x, y) {
         var lsw = (x & 0xffff) + (y & 0xffff)
         var msw = (x >> 16) + (y >> 16) + (lsw >> 16)
@@ -170,6 +170,7 @@ AUTO_ANSWER_SCRIPT = r"""
 
     /**
      * 在答题页面，勾选上查询到的答案
+     * @returns
      */
     const renderResultInExamStartPage = async () => {
         // 检查 jQuery 是否加载
@@ -179,52 +180,76 @@ AUTO_ANSWER_SCRIPT = r"""
         }
 
         let foundCount = 0;
+        
+        // 循环尝试匹配，防止 DOM 懒加载
+        let checkCount = 0;
+        let interval = setInterval(() => {
+            checkCount++;
+            if (checkCount > 10) clearInterval(interval); // 尝试 10 次后停止
 
-        $('.question-content').find('.question-name .pre-wrap').each(function () {
-            // 题干
-            let questionName = repalceText($(this).text());
-            let questionObject = md5DataList.filter(questionMd5 => questionMd5.split(':::')[0] === md5(questionName));
-
-            // 没查到题目的话，跳过当前题目
-            if (questionObject.length === 0) {
-                return;
-            }
-
-            questionObject = questionObject[0];
-            // 拿到选项的MD5列表
-            let answerMD5List = questionObject.split(":::")[1].split(',');
-
-            // 选项MD5
-            $(this).parents('.question-content').find('.answers .select').each(function () {
-                let text = $(this).text().replace(/[\n\r ]+/g, '');
-                let answerMD5 = md5(repalceText(text));
-
-                // 判断题
-                if (['正确', '错误'].includes(text) && answerMD5List.includes(answerMD5)) {
-                    // 原生点击触发
-                    var el = $(this).find('span.words')[0];
-                    if(el) { el.click(); foundCount++; }
+            let currentFound = 0;
+            $('.question-content').find('.question-name .pre-wrap').each(function () {
+                // 题干
+                let questionName = repalceText($(this).text());
+                
+                // 调试日志：打印第一题的计算结果，方便排查
+                if (checkCount === 1 && $(this).index('.question-name .pre-wrap') === 0) {
+                    console.log("🔍 [Debug] 第一题原文:", $(this).text());
+                    console.log("🔍 [Debug] 第一题处理后:", questionName);
+                    console.log("🔍 [Debug] 第一题MD5:", md5(questionName));
                 }
-                // 单选、多选
-                else {
-                    // 如果选项没有内容，就认为是图片
-                    if (text.split('.')[1] === '') {
-                        text += $(this).find('img').attr('src');
-                        let answerMD5 = md5(repalceText(text));
+
+                let questionObject = md5DataList.filter(questionMd5 => questionMd5.split(':::')[0] === md5(questionName));
+
+                // 没查到题目的话，跳过当前题目
+                if (questionObject.length === 0) {
+                    return;
+                }
+
+                questionObject = questionObject[0];
+                // 拿到选项的MD5列表
+                let answerMD5List = questionObject.split(":::")[1].split(',');
+
+                // 选项MD5
+                $(this).parents('.question-content').find('.answers .select').each(function () {
+                    // 如果已经选中了，就不重复点击
+                    if ($(this).hasClass('active') || $(this).find('input').prop('checked')) return;
+
+                    let text = $(this).text().replace(/[\n\r ]+/g, '');
+                    let answerMD5 = md5(repalceText(text));
+
+                    // 判断题
+                    if (['正确', '错误'].includes(text) && answerMD5List.includes(answerMD5)) {
+                        // 原生点击触发
+                        var el = $(this).find('span.words')[0];
+                        if(el) { el.click(); currentFound++; }
+                    }
+                    // 单选、多选
+                    else {
+                        // 如果选项没有内容，就认为是图片
+                        if (text.split('.')[1] === '') {
+                            text += $(this).find('img').attr('src');
+                            let answerMD5 = md5(repalceText(text));
+                            if (answerMD5List.includes(answerMD5)) {
+                                var el = $(this).find('span.words-option')[0];
+                                if(el) { el.click(); currentFound++; }
+                            }
+                        }
+                        // 是否包含在正确答案中
                         if (answerMD5List.includes(answerMD5)) {
                             var el = $(this).find('span.words-option')[0];
-                            if(el) { el.click(); foundCount++; }
+                            if(el) { el.click(); currentFound++; }
                         }
                     }
-                    // 是否包含在正确答案中
-                    if (answerMD5List.includes(answerMD5)) {
-                        var el = $(this).find('span.words-option')[0];
-                        if(el) { el.click(); foundCount++; }
-                    }
-                }
+                });
             });
-        });
-        console.log(`✅ [AutoAnswer] 已自动勾选 ${foundCount} 个答案`);
+            
+            if (currentFound > 0) {
+                console.log(`✅ [AutoAnswer] 第 ${checkCount} 次扫描，新勾选 ${currentFound} 个答案`);
+                foundCount += currentFound;
+            }
+            
+        }, 1000);
     }
 
     //生成从minNum到maxNum的随机数
@@ -243,17 +268,20 @@ AUTO_ANSWER_SCRIPT = r"""
      * 未查询到的答案 随机选择
      */
     const rednerNotFindQuestion = () => {
-        console.log("🎲 [AutoAnswer] 随机填充剩余题目...");
-        $('div.question-content[data-commit="false"]').each(function () {
-            // 如果还没选
-            if ($(this).find('.select.active').length === 0) {
-                var el1 = $(this).find(`span.words-option:eq(${randomNum(0, 3)})`)[0];
-                if(el1) el1.click();
-                
-                var el2 = $(this).find(`span.words:eq(${randomNum(0, 1)})`)[0];
-                if(el2) el2.click();
-            }
-        });
+        // 延迟执行，给精确匹配留时间
+        setTimeout(() => {
+            console.log("🎲 [AutoAnswer] 开始随机填充剩余未答题目...");
+            $('div.question-content[data-commit="false"]').each(function () {
+                // 如果还没选
+                if ($(this).find('.select.active').length === 0 && $(this).find('input:checked').length === 0) {
+                    var el1 = $(this).find(`span.words-option:eq(${randomNum(0, 3)})`)[0];
+                    if(el1) el1.click();
+                    
+                    var el2 = $(this).find(`span.words:eq(${randomNum(0, 1)})`)[0];
+                    if(el2) el2.click();
+                }
+            });
+        }, 12000); // 12秒后执行
     }
 
     // 执行
@@ -314,7 +342,7 @@ def print_browser_logs(driver):
             found_plugin_log = False
             for entry in logs:
                 msg = entry['message']
-                if 'AutoAnswer' in msg or 'Plugin' in msg:
+                if 'AutoAnswer' in msg or 'Plugin' in msg or 'Debug' in msg:
                     print(f"[{entry['level']}] {msg}")
                     found_plugin_log = True
             
@@ -665,12 +693,12 @@ def wait_for_exam_completion(driver, timeout_seconds=180):
                     # 主动注入 JS
                     inject_auto_answer_script(driver)
                     
-                    log("⏳ 给予脚本 30秒 填写答案...") 
+                    log("⏳ 给予脚本 60秒 填写答案...") 
                     exam_started = True
                     exam_page_detected_time = time.time()
                 
-                # 30秒后提交
-                if not python_submit_triggered and (time.time() - exam_page_detected_time > 30):
+                # 60秒后提交
+                if not python_submit_triggered and (time.time() - exam_page_detected_time > 60):
                     force_submit_exam(driver)
                     python_submit_triggered = True 
         except UnexpectedAlertPresentException:
@@ -708,6 +736,26 @@ def get_exam_score(driver):
     return None
 
 
+def print_browser_logs(driver):
+    """打印浏览器控制台日志"""
+    try:
+        logs = driver.get_log('browser')
+        if logs:
+            print("\n🔍 --- 浏览器控制台日志 (过滤后) ---")
+            found_plugin_log = False
+            for entry in logs:
+                msg = entry['message']
+                if 'AutoAnswer' in msg or 'Plugin' in msg or 'Debug' in msg:
+                    print(f"[{entry['level']}] {msg}")
+                    found_plugin_log = True
+            
+            if not found_plugin_log:
+                print("⚠ 未发现插件相关的日志")
+            print("--------------------------------------\n")
+    except Exception as e:
+        log(f"⚠ 获取浏览器日志失败: {e}")
+
+
 def process_single_account(username, password, account_index, total_accounts):
     """处理单个账号"""
     result = {'account_index': account_index, 'username': username, 'status': '未知', 'success': False, 'score': 0, 'highest_score': 0, 'failure_reason': None}
@@ -717,7 +765,7 @@ def process_single_account(username, password, account_index, total_accounts):
         driver = None
         try:
             log("🌐 启动浏览器...")
-            driver = create_chrome_driver() # 修复参数错误
+            driver = create_chrome_driver()
             driver.get("https://passport.jlc.com")
             WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
             
