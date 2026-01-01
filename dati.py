@@ -14,7 +14,7 @@ from selenium.webdriver.support import expected_conditions as EC
 try:
     from Utils import pwdEncrypt
 except ImportError:
-    print("错误: 无法导入 pwdEncrypt。请确保 Utils.py 在同目录下，或者将加密函数直接复制到本脚本中。")
+    print("错误: 无法导入 pwdEncrypt。请确保 Utils.py 在同目录下。")
     sys.exit(1)
 
 def log(msg):
@@ -57,15 +57,19 @@ def get_captcha_ticket():
     log("正在调用 AliV3min.py 获取验证码...")
     start_time = time.time()
     
+    # 获取当前脚本所在的绝对路径目录
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
     try:
-        # 使用当前 python 解释器调用
+        # 关键修改：cwd=current_dir 确保子进程在正确目录下运行，能找到 sign.js 等文件
         process = subprocess.Popen(
             [sys.executable, 'AliV3min.py'],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding='utf-8',
-            errors='ignore'
+            errors='ignore',
+            cwd=current_dir  # 强制工作目录
         )
         
         full_output = ""
@@ -76,9 +80,7 @@ def get_captcha_ticket():
             if time.time() - start_time > 180: # 3分钟超时
                 process.kill()
                 log("AliV3min.py 运行超时 (3分钟)")
-                log("--- AliV3min 日志开始 ---")
-                print(full_output)
-                log("--- AliV3min 日志结束 ---")
+                # 仅在调试时打印详细日志，避免泄露过多信息，这里选择不打印
                 return None
 
             line = process.stdout.readline()
@@ -100,17 +102,17 @@ def get_captcha_ticket():
                         pass
                 # 兼容日志直接输出 Ticket 的情况
                 if len(line) == 32 and all(c in '0123456789abcdef' for c in line):
-                     # 简单的启发式检查：32位hex字符串可能是ticket
                      ticket = line
 
         if ticket:
-            log(f"成功获取 CaptchaTicket: {ticket}")
+            log(f"SUCCESS: Obtained CaptchaTicket:\n{ticket}")
             return ticket
         else:
             log("AliV3min.py 未能返回有效的 captchaTicket")
-            log("--- AliV3min 日志开始 ---")
+            # 如果失败，打印日志以便排查（此时不包含敏感账号信息）
+            print("--- AliV3min Output Log ---")
             print(full_output)
-            log("--- AliV3min 日志结束 ---")
+            print("---------------------------")
             return None
 
     except Exception as e:
@@ -120,18 +122,18 @@ def get_captcha_ticket():
 def process_account(account_idx, username, password, fail_exit_enabled):
     """
     单个账号的处理流程
-    返回: (bool 是否成功, str 原因/分数)
     """
-    log(f"=== 开始处理第 {account_idx} 个账号: {username} ===")
+    # 日志仅显示序号
+    log(f"=== 开始处理第 {account_idx} 个账号 ===")
     
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new") # 新版无头模式，支持插件
+    chrome_options.add_argument("--headless=new") # 新版无头模式
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     
     # 安装插件
-    crx_path = os.path.join(os.getcwd(), 'JLCTK.crx')
+    crx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'JLCTK.crx')
     if os.path.exists(crx_path):
         chrome_options.add_extension(crx_path)
     else:
@@ -139,7 +141,7 @@ def process_account(account_idx, username, password, fail_exit_enabled):
         return False, "插件丢失"
 
     driver = webdriver.Chrome(options=chrome_options)
-    driver.set_script_timeout(30) # 设置JS异步执行超时
+    driver.set_script_timeout(30)
     
     try:
         # ================= Step 1: 初始化 Session =================
@@ -157,12 +159,11 @@ def process_account(account_idx, username, password, fail_exit_enabled):
                     init_success = True
                     break
                 else:
-                    log(f"Session 初始化失败: {resp}")
+                    log(f"Session 初始化失败")
                     driver.refresh()
                     time.sleep(2)
             except Exception as e:
                 log(f"Session 初始化异常: {e}")
-                # 关闭重开
                 driver.quit()
                 driver = webdriver.Chrome(options=chrome_options)
                 driver.set_script_timeout(30)
@@ -170,7 +171,7 @@ def process_account(account_idx, username, password, fail_exit_enabled):
         if not init_success:
             log("错误: 超过3次无法初始化 Session，退出程序。")
             driver.quit()
-            sys.exit(1) # 致命错误直接退出
+            sys.exit(1)
 
         # ================= Step 2: 获取 CaptchaTicket =================
         captcha_ticket = None
@@ -184,15 +185,11 @@ def process_account(account_idx, username, password, fail_exit_enabled):
         if not captcha_ticket:
             log("错误: 超过3次无法获取 CaptchaTicket，退出程序。")
             driver.quit()
-            sys.exit(1) # 致命错误直接退出
+            sys.exit(1)
 
         # ================= Step 3: 登录 =================
         login_retry_max = 3
         login_success = False
-        
-        # 账号级重试循环 (针对 Step 3 - Step 5 的部分流程)
-        # 这里逻辑稍微复杂：如果接口返回非密码错误，或者找不到客编，需要重试整个账号流程
-        # 为了简化，我们在当前 Session 中重试登录请求
         
         for login_attempt in range(login_retry_max):
             log(f"发送登录请求 (尝试 {login_attempt+1}/{login_retry_max})...")
@@ -219,12 +216,10 @@ def process_account(account_idx, username, password, fail_exit_enabled):
                     login_success = True
                     break
                 elif resp.get("code") == 10208:
-                    msg = resp.get("message", "账号或密码错误")
-                    log(f"登录失败: {msg}")
-                    return False, "账号或密码不正确" # 不需要重试，直接下一个账号
+                    log("登录失败: 账号或密码不正确")
+                    return False, "账号或密码不正确" 
                 else:
-                    log(f"登录接口返回异常: {resp}")
-                    # 继续重试循环
+                    log(f"登录接口返回其他代码: {resp.get('code')}")
             else:
                 log("登录请求无响应")
             
@@ -240,20 +235,15 @@ def process_account(account_idx, username, password, fail_exit_enabled):
                 log("正在打开 member.jlc.com 验证登录...")
                 driver.get("https://member.jlc.com/")
                 
-                # 等待页面加载
                 WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                time.sleep(5) # 硬性等待
+                time.sleep(5) 
                 
                 page_source = driver.page_source
                 if "客编" in page_source:
-                    # 尝试提取具体客编用于日志
-                    try:
-                        # 寻找包含客编的元素，简单查找文本
-                        log("验证成功: 页面包含'客编'")
-                        verify_success = True
-                        break
-                    except:
-                        pass
+                    # 尝试提取客编数字部分用于日志（脱敏处理，只记录找到了）
+                    log("验证成功: 页面包含'客编'")
+                    verify_success = True
+                    break
                 else:
                     log("验证失败: 页面未找到'客编'")
             except Exception as e:
@@ -268,7 +258,6 @@ def process_account(account_idx, username, password, fail_exit_enabled):
         # ================= Step 5: 考试流程 =================
         exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
         
-        exam_pass = False
         final_score = 0
         
         for exam_retry in range(3):
@@ -276,11 +265,9 @@ def process_account(account_idx, username, password, fail_exit_enabled):
             try:
                 driver.get(exam_url)
                 
-                # 寻找开始按钮
                 btn_found = False
                 for refresh_i in range(3):
                     try:
-                        # 等待重定向稳定，检测按钮
                         WebDriverWait(driver, 15).until(
                             EC.presence_of_element_located((By.ID, "startExamBtn"))
                         )
@@ -290,26 +277,22 @@ def process_account(account_idx, username, password, fail_exit_enabled):
                         btn_found = True
                         break
                     except Exception:
-                        log(f"未找到开始按钮，当前标题: {driver.title}, URL: {driver.current_url}")
+                        log(f"未找到开始按钮，尝试刷新...")
                         if refresh_i < 2:
-                            log("刷新页面重试...")
                             driver.refresh()
                             time.sleep(3)
                 
                 if not btn_found:
                     log("多次刷新仍未找到开始按钮，跳过本次重试")
-                    continue # 下一次 exam_retry
+                    continue 
 
-                # 等待组卷和插件运行
                 log("点击成功，等待组卷及插件运行(限时3分钟)...")
                 
-                # 记录点击后的时间
                 exam_start_time = time.time()
                 score_found = False
                 
-                while time.time() - exam_start_time < 180: # 3分钟超时
+                while time.time() - exam_start_time < 180: 
                     try:
-                        # 检测分数页面特征
                         if len(driver.find_elements(By.CSS_SELECTOR, "span.score")) > 0:
                             score_elem = driver.find_element(By.CSS_SELECTOR, "span.score")
                             score_text = score_elem.text.strip()
@@ -324,7 +307,6 @@ def process_account(account_idx, username, password, fail_exit_enabled):
                 
                 if score_found:
                     if final_score >= 60:
-                        exam_pass = True
                         return True, f"分数:{final_score}"
                     else:
                         log(f"分数 {final_score} 低于 60，需要重试")
@@ -334,8 +316,6 @@ def process_account(account_idx, username, password, fail_exit_enabled):
             except Exception as e:
                 log(f"答题流程发生异常: {e}")
             
-            # 如果没通过，循环会继续，进行下一次重试
-
         return False, f"最高得分{final_score}/脚本超时或失败"
 
     except Exception as e:
@@ -375,15 +355,14 @@ def main():
         pwd = pwds[i].strip()
         if not user: continue
         
+        # 传递 i+1 作为序号，不打印 user
         success, msg = process_account(i+1, user, pwd, fail_exit_flag)
         results.append({
             "index": i+1,
-            "user": user,
             "success": success,
             "msg": msg
         })
         
-        # 账号间稍作休息
         if i < len(users) - 1:
             time.sleep(2)
 
@@ -395,7 +374,8 @@ def main():
     
     for res in results:
         status = "立创题库答题成功✅" if res['success'] else "立创题库答题失败❌"
-        print(f"账号{res['index']} ({res['user']})")
+        # 结果汇总也只显示序号
+        print(f"账号{res['index']}")
         if res['success']:
             print(f"{status} {res['msg']}")
             pass_count += 1
