@@ -11,20 +11,23 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException
+from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException, TimeoutException
 
 # 导入SM2加密方法
 try:
     from Utils import pwdEncrypt
-    print("✅ 成功加载 SM2 加密依赖 (Utils.pwdEncrypt)")
+    print("✅ 成功加载 SM2 加密依赖")
 except ImportError:
     print("❌ 错误: 未找到 Utils.py 或 pwdEncrypt 函数，请确保同目录下存在该文件")
     sys.exit(1)
 
 
-def log(msg):
+def log(msg, show_time=True):
     """带时间戳的日志输出"""
-    full_msg = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    if show_time:
+        full_msg = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    else:
+        full_msg = msg
     print(full_msg, flush=True)
 
 
@@ -65,7 +68,7 @@ def create_chrome_driver():
 def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
     """调用 AliV3min.py 获取 captchaTicket"""
     for attempt in range(max_retries):
-        log(f"📞 调用 AliV3min.py 获取 captchaTicket (尝试 {attempt + 1}/{max_retries})...")
+        log(f"📞 正在调用 登录脚本 获取 captchaTicket (尝试 {attempt + 1}/{max_retries})...")
         try:
             if not os.path.exists('AliV3min.py'):
                 log("❌ 错误: 找不到 AliV3min.py")
@@ -86,7 +89,7 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
             while True:
                 elapsed = time.time() - start_time
                 if elapsed > timeout_seconds:
-                    log(f"⏰ AliV3min.py 超过 {timeout_seconds} 秒未完成，强制终止...")
+                    log(f"⏰ 登录脚本超过 {timeout_seconds} 秒未完成，强制终止...")
                     process.kill()
                     process.wait()
                     break
@@ -124,7 +127,7 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
                 log(f"❌ 本次尝试未获取到 Ticket")
                 time.sleep(2)
         except Exception as e:
-            log(f"❌ 调用 AliV3min.py 异常: {e}")
+            log(f"❌ 调用登录脚本异常: {e}")
             time.sleep(2)
     return None
 
@@ -176,13 +179,14 @@ def send_request_via_browser(driver, url, method='POST', body=None):
 def perform_init_session(driver, max_retries=3):
     """执行 Session 初始化"""
     for i in range(max_retries):
-        log(f"📡 初始化会话 (Attempt {i+1})...")
+        log(f"📡 初始化会话 ...")
         response = send_request_via_browser(driver, "https://passport.jlc.com/api/cas/login/get-init-session", 'POST', {"appId": "JLC_PORTAL_PC", "clientType": "PC-WEB"})
         if response and response.get('success') == True and response.get('code') == 200:
             log("✅ 初始化会话成功")
             return True
         else:
-            time.sleep(2)
+            if i < max_retries - 1:
+                time.sleep(2)
     return False
 
 
@@ -220,58 +224,88 @@ def verify_login_on_member_page(driver, max_retries=3):
                 return True
         except Exception:
             pass
-        time.sleep(2)
+        if attempt < max_retries - 1:
+            time.sleep(2)
     return False
 
 
-def switch_to_exam_iframe(driver):
-    """尝试切换到答题系统的iframe"""
+def switch_to_exam_iframe(driver, wait_time=10):
+    """尝试切换到答题系统的iframe，增加等待时间"""
     try:
         driver.switch_to.default_content()
-        iframe = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, "client_context_frame")))
-        driver.switch_to.frame(iframe)
+        # 先等待iframe出现
+        iframe = WebDriverWait(driver, wait_time).until(
+            EC.presence_of_element_located((By.ID, "client_context_frame"))
+        )
+        # 再等待iframe可切换
+        WebDriverWait(driver, wait_time).until(
+            EC.frame_to_be_available_and_switch_to_it((By.ID, "client_context_frame"))
+        )
+        # 切换后等待内容加载
+        time.sleep(2)
         return True
     except:
         try:
             driver.switch_to.default_content()
-            iframe = driver.find_element(By.NAME, "context_iframe")
-            driver.switch_to.frame(iframe)
+            iframe = WebDriverWait(driver, wait_time).until(
+                EC.presence_of_element_located((By.NAME, "context_iframe"))
+            )
+            WebDriverWait(driver, wait_time).until(
+                EC.frame_to_be_available_and_switch_to_it((By.NAME, "context_iframe"))
+            )
+            time.sleep(2)
             return True
         except:
             pass
     return False
 
 
-def extract_real_exam_url(driver):
+def extract_real_exam_url(driver, retry_attempt=0):
     """
     在 member.jlc.com 页面内等待iframe加载并出现开始按钮，
     然后提取真实URL。
+    优化：根据重试次数调整等待策略
     """
-    log("🔗 正在打开嘉立创中转页...")
+    log("🔗 正在打开立创答题中转页...")
     member_exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
     driver.get(member_exam_url)
     
-    log("⏳ 等待页面及 Iframe 加载 (20s)...")
+    # 根据重试次数调整等待时间
+    if retry_attempt == 0:
+        wait_time = 30  # 首次等待更长时间
+        log("⏳ 等待页面及 Iframe 加载 (30s)...")
+    else:
+        wait_time = 20
+        log("⏳ 等待页面及 Iframe 加载 (20s)...")
     
     try:
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
+        # 先等待页面基本加载
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(3)  # 额外等待，让iframe有时间渲染
         
-        if switch_to_exam_iframe(driver):
-            # 等待按钮出现，说明已经是 kaoshixing 的页面了
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.XPATH, '//*[@id="startExamBtn"] | //span[contains(text(), "开始答题")]'))
-            )
-            # 提取当前 iframe 的真实 URL
-            real_url = driver.execute_script("return window.location.href;")
-            driver.switch_to.default_content()
-            
-            if real_url and "kaoshixing.com" in real_url:
-                log(f"✅ 提取真实链接成功")
-                return real_url
-    except Exception:
+        # 尝试切换到iframe
+        if switch_to_exam_iframe(driver, wait_time=wait_time):
+            try:
+                # 等待按钮出现，说明已经是 kaoshixing 的页面了
+                WebDriverWait(driver, wait_time).until(
+                    EC.presence_of_element_located((By.XPATH, '//*[@id="startExamBtn"] | //span[contains(text(), "开始答题")]'))
+                )
+                # 提取当前 iframe 的真实 URL
+                real_url = driver.execute_script("return window.location.href;")
+                driver.switch_to.default_content()
+                
+                if real_url and "kaoshixing.com" in real_url:
+                    log(f"✅ 提取答题链接成功")
+                    return real_url
+            except TimeoutException:
+                log(f"⚠ iframe 内容加载超时")
+                driver.switch_to.default_content()
+    except Exception as e:
+        log(f"⚠ 页面加载异常: {str(e)[:50]}")
         try:
             driver.switch_to.default_content()
-        except: pass
+        except: 
+            pass
 
     return None
 
@@ -333,7 +367,7 @@ def wait_for_exam_completion_with_js(driver, timeout_seconds=180):
     """
     等待 JS 执行完成并跳转到结果页
     """
-    log(f"⏳ 等待答题脚本运行及跳转 (最长 {timeout_seconds}s)...")
+    log(f"⏳ 等待进入试卷页面...")
     start_time = time.time()
     last_log_time = start_time
     js_injected = False
@@ -351,7 +385,7 @@ def wait_for_exam_completion_with_js(driver, timeout_seconds=180):
             
             # 1. 成功跳转至结果页
             if '/result/' in current_url:
-                log(f"✅ 成功跳转至结果页")
+                log(f"✅ 成功跳转至答题结果页")
                 return True
             
             # 2. 如果在答题页，且还没注入 JS，则注入
@@ -386,7 +420,8 @@ def get_exam_score(driver):
             score = int(re.search(r'\d+', score_elem.text.strip()).group())
             log(f"📊 提取到分数: {score}")
             return score
-        except: pass
+        except: 
+            pass
         
         try:
             elements = driver.find_elements(By.XPATH, "//*[contains(text(), '分')]")
@@ -396,7 +431,8 @@ def get_exam_score(driver):
                      score = int(re.search(r'\d+', txt).group())
                      log(f"📊 提取到分数: {score}")
                      return score
-        except: pass
+        except: 
+            pass
     except Exception as e:
         log(f"❌ 获取分数失败: {e}")
     return None
@@ -412,27 +448,34 @@ def process_single_account(username, password, account_index, total_accounts):
     
     try:
         log(f"🌐 启动浏览器 (账号 {account_index})...")
-        driver = create_chrome_driver() # 修正：这里不再传递参数
+        driver = create_chrome_driver()
         
         # 登录流程
         driver.get("https://passport.jlc.com")
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        if not perform_init_session(driver): raise Exception("初始化 Session 失败")
+        if not perform_init_session(driver): 
+            raise Exception("初始化 Session 失败")
         captcha_ticket = call_aliv3min_with_timeout()
-        if not captcha_ticket: raise Exception("获取 CaptchaTicket 失败")
+        if not captcha_ticket: 
+            raise Exception("获取 CaptchaTicket 失败")
         status, login_res = login_with_password(driver, username, password, captcha_ticket)
         if status == 'password_error':
-            result['status'] = '密码错误'; result['failure_reason'] = '账号或密码不正确'; driver.quit(); return result
-        if status != 'success': raise Exception("登录失败")
-        if not verify_login_on_member_page(driver): raise Exception("登录验证失败")
+            result['status'] = '密码错误'
+            result['failure_reason'] = '账号或密码不正确'
+            driver.quit()
+            return result
+        if status != 'success': 
+            raise Exception("登录失败")
+        if not verify_login_on_member_page(driver): 
+            raise Exception("登录验证失败")
         
-        # 提取链接
+        # 提取链接 - 优化重试策略
         for extract_attempt in range(3):
-            real_exam_url = extract_real_exam_url(driver)
+            real_exam_url = extract_real_exam_url(driver, retry_attempt=extract_attempt)
             if real_exam_url:
                 break
             log(f"⚠ 提取链接失败，重试 ({extract_attempt+1}/3)...")
-            time.sleep(2)
+            time.sleep(3)  # 增加重试间隔
             
         if not real_exam_url:
             log("❌ 3次尝试均无法提取考试链接，跳过该账号")
@@ -442,7 +485,8 @@ def process_single_account(username, password, account_index, total_accounts):
             
     except Exception as e:
         log(f"❌ 准备阶段异常: {e}")
-        if driver: driver.quit()
+        if driver: 
+            driver.quit()
         return result
 
     # --- 步骤 2: 答题流程 (复用已提取的链接，最多重试3次) ---
@@ -471,7 +515,10 @@ def process_single_account(username, password, account_index, total_accounts):
                 result['highest_score'] = max(result['highest_score'], score)
                 if score >= 60:
                     log(f"🎉 答题通过! 分数: {score}")
-                    result['success'] = True; result['status'] = '答题成功'; driver.quit(); return result
+                    result['success'] = True
+                    result['status'] = '答题成功'
+                    driver.quit()
+                    return result
                 else:
                     log(f"😢 分数未达标: {score}")
                     result['failure_reason'] = f"最高得分{result['highest_score']}"
@@ -493,21 +540,35 @@ def main():
     usernames = sys.argv[1].split(',')
     passwords = sys.argv[2].split(',')
     fail_exit = len(sys.argv) >= 4 and sys.argv[3].lower() == 'true'
-    if len(usernames) != len(passwords): log("❌ 账号密码数量不匹配"); sys.exit(1)
+    
+    if len(usernames) != len(passwords): 
+        log("❌ 账号密码数量不匹配")
+        sys.exit(1)
+    
+    # 输出初始信息
+    log(f"检测到有 {len(usernames)} 个账号需要答题，失败退出功能已{'开启' if fail_exit else '未开启'}", show_time=False)
     
     all_results = []
     for i, (u, p) in enumerate(zip(usernames, passwords), 1):
-        log(f"\n{'='*40}\n正在处理账号 {i}\n{'='*40}")
+        log(f"\n{'='*40}\n正在处理账号 {i}\n{'='*40}", show_time=False)
         res = process_single_account(u, p, i, len(usernames))
         all_results.append(res)
-        if i < len(usernames): time.sleep(5)
+        if i < len(usernames): 
+            time.sleep(5)
         
-    log("\n" + "="*40); log("📊 最终结果总结"); log("="*40)
+    log("\n" + "="*40, show_time=False)
+    log("📊 最终结果总结", show_time=False)
+    log("="*40, show_time=False)
     has_failure = False
     for res in all_results:
-        if res['success']: log(f"账号{res['account_index']}: 立创题库答题成功✅ 分数:{res['score']}")
-        else: has_failure = True; log(f"账号{res['account_index']}: 立创题库答题失败❌ 原因:{res['failure_reason']}")
-    if fail_exit and has_failure: sys.exit(1)
+        if res['success']: 
+            log(f"账号{res['account_index']}: 立创题库答题成功✅ 分数:{res['score']}", show_time=False)
+        else: 
+            has_failure = True
+            log(f"账号{res['account_index']}: 立创题库答题失败❌ 原因:{res['failure_reason']}", show_time=False)
+    
+    if fail_exit and has_failure: 
+        sys.exit(1)
     sys.exit(0)
 
 if __name__ == "__main__":
