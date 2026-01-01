@@ -1,3 +1,5 @@
+document.documentElement.setAttribute("data-ext-loaded", "1");
+console.log("EXTENSION CONTENT SCRIPT LOADED", location.href);
 (function () {
     'use strict';
 
