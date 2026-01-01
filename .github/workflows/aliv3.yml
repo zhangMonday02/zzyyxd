@@ -32,4 +32,4 @@ jobs:
 
       - name: '测试aliv3'
         run: |
-          python ./testaliv3.py
+          python ./AliV3min.py
