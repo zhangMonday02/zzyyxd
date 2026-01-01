@@ -9,9 +9,10 @@ from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException, TimeoutException
+from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException
 
 # 导入SM2加密方法
 try:
@@ -46,6 +47,11 @@ def create_chrome_driver(with_extension=True):
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument(f"--user-data-dir={tempfile.mkdtemp()}")
     
+    # 开启日志记录
+    caps = DesiredCapabilities.CHROME
+    caps['goog:loggingPrefs'] = {'browser': 'ALL'}
+    chrome_options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})
+
     # --- 插件加载 ---
     if with_extension:
         extension_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'JLCTK.crx')
@@ -67,6 +73,21 @@ def create_chrome_driver(with_extension=True):
     })
     
     return driver
+
+
+def print_browser_logs(driver):
+    """打印浏览器控制台日志"""
+    try:
+        logs = driver.get_log('browser')
+        if logs:
+            log("--- 浏览器控制台日志 START ---")
+            for entry in logs:
+                # 过滤掉一些无关紧要的日志
+                if entry['level'] == 'SEVERE' or 'error' in entry['message'].lower() or 'plugin' in entry['message'].lower():
+                    print(f"[{entry['level']}] {entry['message']}")
+            log("--- 浏览器控制台日志 END ---")
+    except Exception as e:
+        log(f"⚠ 获取浏览器日志失败: {e}")
 
 
 def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
@@ -261,36 +282,21 @@ def switch_to_exam_iframe(driver):
 
 
 def extract_and_visit_exam_iframe(driver):
-    """
-    先在 member.jlc.com 页面内等待iframe加载并出现开始按钮，
-    然后再提取真实URL跳转。
-    """
+    """先在 member.jlc.com 页面内等待iframe加载并出现开始按钮，然后再提取真实URL跳转。"""
     log("🔗 正在打开嘉立创中转页...")
     member_exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
     driver.get(member_exam_url)
-    
     log("⏳ 等待页面及 Iframe 加载 (20s)...")
-    
-    # 尝试切换到 iframe 并等待按钮出现，确保 URL 已经跳转完毕
     try:
-        # 等待 iframe 元素出现
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
-        
-        # 尝试切入 iframe
         if switch_to_exam_iframe(driver):
             log("✅ 已切入 Iframe，等待[开始答题]按钮出现以确认重定向完成...")
-            # 等待按钮出现，说明已经是 kaoshixing 的页面了
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.XPATH, '//*[@id="startExamBtn"] | //span[contains(text(), "开始答题")]'))
             )
             log("✅ 按钮已出现，提取真实 URL...")
-            
-            # 提取当前 iframe 的真实 URL
             real_url = driver.execute_script("return window.location.href;")
-            
-            # 切回主文档
             driver.switch_to.default_content()
-            
             if real_url and "kaoshixing.com" in real_url:
                 log(f"✅ 提取成功: {real_url}")
                 log("🚀 跳转到真实考试页面 (顶层窗口)...")
@@ -300,15 +306,10 @@ def extract_and_visit_exam_iframe(driver):
                 log(f"❌ 提取到的 URL 不正确: {real_url}")
         else:
             log("❌ 无法切入 Iframe")
-            
     except Exception as e:
         log(f"❌ 提取 URL 过程超时或出错: {e}")
-        # 如果出错，打印一下源码看下
-        try:
-            driver.switch_to.default_content()
-            # print(driver.page_source[:500]) 
+        try: driver.switch_to.default_content() 
         except: pass
-
     return False
 
 
@@ -316,7 +317,6 @@ def click_start_exam_button(driver):
     """点击开始答题 (在顶层窗口)"""
     log(f"🔍 检查开始答题按钮...")
     xpaths = ['//*[@id="startExamBtn"]', '//button[contains(@class, "btn-primary")]//span[contains(text(), "开始答题")]', '//span[contains(text(), "开始答题")]']
-    
     for xpath in xpaths:
         try:
             elem = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, xpath)))
@@ -348,6 +348,16 @@ def handle_possible_alerts(driver):
 def force_submit_exam(driver):
     """Python 主动执行交卷逻辑"""
     log("⚡ Python 介入，尝试主动提交试卷...")
+    
+    # 截图以供调试
+    try:
+        driver.save_screenshot("before_submit.png")
+        log("📸 已保存提交前截图: before_submit.png")
+    except: pass
+    
+    # 打印日志以供调试
+    print_browser_logs(driver)
+    
     try:
         end_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "endExamBtn")))
         if end_btn.get_attribute("disabled"):
@@ -355,7 +365,6 @@ def force_submit_exam(driver):
             time.sleep(0.5)
         end_btn.click()
         log("✅ 点击了[提交试卷]")
-        
         time.sleep(1) 
         confirm_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "confirmEndExamBtn")))
         confirm_btn.click()
@@ -389,11 +398,12 @@ def wait_for_exam_completion(driver, timeout_seconds=180):
             
             if 'exam_start' in current_url:
                 if not exam_started:
-                    log("✅ 进入答题页面，给予插件 25秒 填写答案...")
+                    log("✅ 进入答题页面，给予插件 60秒 填写答案...") # 延长到60秒
                     exam_started = True
                     exam_page_detected_time = time.time()
                 
-                if not python_submit_triggered and (time.time() - exam_page_detected_time > 25):
+                # 延长到 60 秒后再提交
+                if not python_submit_triggered and (time.time() - exam_page_detected_time > 60):
                     force_submit_exam(driver)
                     python_submit_triggered = True 
         except UnexpectedAlertPresentException:
@@ -417,7 +427,6 @@ def get_exam_score(driver):
             log(f"📊 提取到分数 (Element): {score}")
             return score
         except: pass
-        
         try:
             elements = driver.find_elements(By.XPATH, "//*[contains(text(), '分')]")
             for el in elements:
@@ -456,23 +465,16 @@ def process_single_account(username, password, account_index, total_accounts):
             
             for exam_retry in range(3):
                 log(f"📝 开始答题 ({exam_retry+1}/3)...")
-                # 1. 提取真实链接并跳转 (Wait until button visible inside iframe)
                 if not extract_and_visit_exam_iframe(driver):
                     log("❌ 无法提取考试页面 URL")
                     continue
-                
-                # 2. 点击开始按钮 (Top level)
                 if not click_start_exam_button(driver):
                     log("❌ 找不到开始按钮")
                     continue
-                    
-                # 3. 等待插件答题 + Python 自动交卷
                 if not wait_for_exam_completion(driver):
                     log("❌ 答题超时")
                     result['failure_reason'] = '脚本超过3分钟未执行成功'
                     continue
-                    
-                # 4. 获取分数
                 score = get_exam_score(driver)
                 if score is not None:
                     result['score'] = score
@@ -485,14 +487,12 @@ def process_single_account(username, password, account_index, total_accounts):
                         result['failure_reason'] = f"最高得分{result['highest_score']}"
                 else:
                     log("⚠ 未能获取到分数")
-                
             raise Exception("答题多次未通过或超时")
         except Exception as e:
             log(f"❌ 流程异常: {e}")
             result['failure_reason'] = str(e)
         finally:
             if driver: driver.quit()
-                
     result['status'] = '失败'
     return result
 
