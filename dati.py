@@ -65,8 +65,8 @@ def create_chrome_driver():
     return driver
 
 
-def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
-    """调用 AliV3min.py 获取 captchaTicket"""
+def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=5):
+    """调用 AliV3min.py 获取 captchaTicket - 最多重试5次"""
     for attempt in range(max_retries):
         log(f"📞 正在调用 登录脚本 获取 captchaTicket (尝试 {attempt + 1}/{max_retries})...")
         
@@ -76,7 +76,8 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
         try:
             if not os.path.exists('AliV3min.py'):
                 log("❌ 错误: 找不到登录依赖 AliV3min.py")
-                return None
+                log("❌ 登录脚本存在异常")
+                sys.exit(1)
 
             process = subprocess.Popen(
                 [sys.executable, 'AliV3min.py'],
@@ -197,7 +198,9 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
                 log(f"⏳ 等待3秒后重试...")
                 time.sleep(3)
     
-    return None
+    # 5次都失败，程序退出
+    log("❌ 登录脚本存在异常")
+    sys.exit(1)
 
 
 def send_request_via_browser(driver, url, method='POST', body=None):
@@ -247,13 +250,14 @@ def send_request_via_browser(driver, url, method='POST', body=None):
 def perform_init_session(driver, max_retries=3):
     """执行 Session 初始化"""
     for i in range(max_retries):
-        log(f"📡 初始化会话 ...")
+        log(f"📡 初始化会话 (尝试 {i + 1}/{max_retries})...")
         response = send_request_via_browser(driver, "https://passport.jlc.com/api/cas/login/get-init-session", 'POST', {"appId": "JLC_PORTAL_PC", "clientType": "PC-WEB"})
         if response and response.get('success') == True and response.get('code') == 200:
             log("✅ 初始化会话成功")
             return True
         else:
             if i < max_retries - 1:
+                log(f"⚠ 初始化会话失败，等待2秒后重试...")
                 time.sleep(2)
     return False
 
@@ -290,9 +294,10 @@ def verify_login_on_member_page(driver, max_retries=3):
             if "客编" in page_source or "customerCode" in page_source:
                 log(f"✅ 验证登录成功")
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"⚠ 验证登录失败: {e}")
         if attempt < max_retries - 1:
+            log(f"⏳ 等待2秒后重试...")
             time.sleep(2)
     return False
 
@@ -505,45 +510,17 @@ def get_exam_score(driver):
     return None
 
 
-def process_single_account(username, password, account_index, total_accounts):
-    """处理单个账号 - 添加完整的重试机制"""
-    result = {'account_index': account_index, 'status': '未知', 'success': False, 'score': 0, 'highest_score': 0, 'failure_reason': None}
-    
-    # 整个流程最多重试3次
-    for full_retry in range(3):
-        driver = None
-        real_exam_url = None
+def perform_exam_process(driver, max_retries=3):
+    """
+    执行答题流程（从打开中转页到获取分数）
+    使用同一个浏览器实例重试，最多3次
+    """
+    for exam_attempt in range(max_retries):
+        log(f"📝 开始答题流程 (尝试 {exam_attempt + 1}/{max_retries})...")
         
         try:
-            log(f"🌐 启动浏览器 (账号 {account_index}) - 尝试 {full_retry+1}/3...")
-            driver = create_chrome_driver()
-            
-            # --- 步骤 1: 登录流程 ---
-            driver.get("https://passport.jlc.com")
-            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            
-            if not perform_init_session(driver): 
-                raise Exception("初始化 Session 失败")
-                
-            captcha_ticket = call_aliv3min_with_timeout()
-            if not captcha_ticket: 
-                raise Exception("获取 CaptchaTicket 失败")
-                
-            status, login_res = login_with_password(driver, username, password, captcha_ticket)
-            if status == 'password_error':
-                result['status'] = '密码错误'
-                result['failure_reason'] = '账号或密码不正确'
-                if driver:
-                    driver.quit()
-                return result  # 密码错误不重试
-                
-            if status != 'success': 
-                raise Exception("登录失败")
-                
-            if not verify_login_on_member_page(driver): 
-                raise Exception("登录验证失败")
-            
-            # --- 步骤 2: 提取链接 (内部重试3次) ---
+            # 步骤 1: 提取链接 (内部重试3次)
+            real_exam_url = None
             for extract_attempt in range(3):
                 real_exam_url = extract_real_exam_url(driver, retry_attempt=extract_attempt)
                 if real_exam_url:
@@ -554,52 +531,163 @@ def process_single_account(username, password, account_index, total_accounts):
             if not real_exam_url:
                 raise Exception("无法提取考试链接")
             
-            # --- 步骤 3: 答题流程 ---
-            log(f"📝 开始答题流程...")
-            
-            # 直接跳转到真实考试页面
+            # 步骤 2: 直接跳转到真实考试页面
             driver.get(real_exam_url)
             
-            # 点击开始按钮
+            # 步骤 3: 点击开始按钮
             if not click_start_exam_button(driver):
                 raise Exception("找不到开始按钮")
                 
-            # 注入 JS 并等待结果
+            # 步骤 4: 注入 JS 并等待结果
             if not wait_for_exam_completion_with_js(driver):
                 raise Exception("答题超时")
                 
-            # 获取分数
+            # 步骤 5: 获取分数
             score = get_exam_score(driver)
             if score is not None:
-                result['score'] = score
-                result['highest_score'] = max(result['highest_score'], score)
-                if score >= 60:
-                    log(f"🎉 答题通过! 分数: {score}")
-                    result['success'] = True
-                    result['status'] = '答题成功'
-                    driver.quit()
-                    return result
-                else:
-                    log(f"😢 分数未达标: {score}, 将重试")
-                    result['failure_reason'] = f"最高得分{result['highest_score']}"
+                return True, score
             else:
                 raise Exception("未能获取到分数")
                 
         except Exception as e:
-            log(f"❌ 准备阶段异常: {e}")
-            if full_retry < 2:  # 还有重试机会
-                log(f"⏳ 等待5秒后重试...")
-                time.sleep(5)
+            log(f"❌ 答题流程异常: {e}")
+            if exam_attempt < max_retries - 1:
+                log(f"⏳ 等待3秒后重试答题流程...")
+                time.sleep(3)
             else:
-                result['failure_reason'] = str(e)
-        finally:
+                log(f"❌ 答题流程已达最大重试次数")
+                return False, None
+    
+    return False, None
+
+
+def perform_login_flow(driver, username, password, max_retries=3):
+    """
+    执行完整的登录流程（包括Session初始化、登录、验证）
+    如果失败，完全关闭浏览器重新创建，最多重试3次
+    """
+    session_fail_count = 0
+    
+    for login_attempt in range(max_retries):
+        log(f"🔐 开始登录流程 (尝试 {login_attempt + 1}/{max_retries})...")
+        
+        try:
+            # 步骤 1: 打开登录页
+            driver.get("https://passport.jlc.com")
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            
+            # 步骤 2: 初始化 Session
+            if not perform_init_session(driver):
+                session_fail_count += 1
+                if session_fail_count >= 3:
+                    log("❌ 浏览器环境存在异常")
+                    sys.exit(1)
+                raise Exception("初始化 Session 失败")
+            
+            # 重置失败计数（成功了就清零）
+            session_fail_count = 0
+            
+            # 步骤 3: 获取 CaptchaTicket（全局重试5次，失败直接退出程序）
+            captcha_ticket = call_aliv3min_with_timeout()
+            if not captcha_ticket:
+                # 这里不会执行到，因为 call_aliv3min_with_timeout 失败会直接 sys.exit(1)
+                raise Exception("获取 CaptchaTicket 失败")
+            
+            # 步骤 4: 登录
+            status, login_res = login_with_password(driver, username, password, captcha_ticket)
+            if status == 'password_error':
+                return 'password_error', None
+            if status != 'success':
+                raise Exception("登录失败")
+            
+            # 步骤 5: 验证登录
+            if not verify_login_on_member_page(driver):
+                raise Exception("登录验证失败")
+            
+            log("✅ 登录流程完成")
+            return 'success', driver
+            
+        except Exception as e:
+            log(f"❌ 登录流程异常: {e}")
+            if login_attempt < max_retries - 1:
+                log(f"⏳ 关闭浏览器，等待5秒后重新创建浏览器实例...")
+                try:
+                    driver.quit()
+                except:
+                    pass
+                time.sleep(5)
+                # 重新创建浏览器
+                driver = create_chrome_driver()
+            else:
+                log(f"❌ 登录流程已达最大重试次数")
+                return 'login_failed', driver
+    
+    return 'login_failed', driver
+
+
+def process_single_account(username, password, account_index, total_accounts):
+    """处理单个账号 - 重构后的流程"""
+    result = {
+        'account_index': account_index, 
+        'status': '未知', 
+        'success': False, 
+        'score': 0, 
+        'highest_score': 0, 
+        'failure_reason': None
+    }
+    
+    driver = None
+    
+    try:
+        log(f"🌐 启动浏览器 (账号 {account_index})...")
+        driver = create_chrome_driver()
+        
+        # --- 阶段 1: 登录流程（失败会完全重启浏览器，最多3次） ---
+        login_status, driver = perform_login_flow(driver, username, password, max_retries=3)
+        
+        if login_status == 'password_error':
+            result['status'] = '密码错误'
+            result['failure_reason'] = '账号或密码不正确'
             if driver:
                 driver.quit()
+            return result
+        
+        if login_status != 'success':
+            result['status'] = '登录失败'
+            result['failure_reason'] = '登录流程失败'
+            if driver:
+                driver.quit()
+            return result
+        
+        # --- 阶段 2: 答题流程（使用同一浏览器实例重试，最多3次） ---
+        exam_success, score = perform_exam_process(driver, max_retries=3)
+        
+        if exam_success and score is not None:
+            result['score'] = score
+            result['highest_score'] = score
+            if score >= 60:
+                log(f"🎉 答题通过! 分数: {score}")
+                result['success'] = True
+                result['status'] = '答题成功'
+            else:
+                log(f"😢 分数未达标: {score}")
+                result['status'] = '分数不达标'
+                result['failure_reason'] = f"得分{score}分"
+        else:
+            result['status'] = '答题失败'
+            result['failure_reason'] = '答题流程失败'
+        
+    except Exception as e:
+        log(f"❌ 账号处理异常: {e}")
+        result['status'] = '异常'
+        result['failure_reason'] = str(e)
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
     
-    # 3次完整流程都失败
-    result['status'] = '失败'
-    if not result['failure_reason']:
-        result['failure_reason'] = '3次尝试均失败'
     return result
 
 
