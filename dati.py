@@ -1,399 +1,869 @@
-import sys
 import os
+import sys
 import time
 import json
+import tempfile
 import subprocess
-import random
+import re
+from datetime import datetime
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# 尝试导入加密方法，假设 Utils.py 在同目录
+# 导入SM2加密方法
 try:
     from Utils import pwdEncrypt
+    print("✅ 成功加载 SM2 加密依赖 (Utils.pwdEncrypt)")
 except ImportError:
-    print("错误: 无法导入 pwdEncrypt。请确保 Utils.py 在同目录下。")
+    print("❌ 错误: 未找到 Utils.py 或 pwdEncrypt 函数，请确保同目录下存在该文件")
     sys.exit(1)
 
 def log(msg):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    print(f"[{timestamp}] {msg}")
+    """带时间戳的日志输出"""
+    full_msg = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    print(full_msg, flush=True)
 
-def execute_js_request(driver, url, payload):
-    """
-    通过浏览器控制台(fetch)发送POST请求
-    """
-    js_script = """
-    var url = arguments[0];
-    var payload = arguments[1];
-    var callback = arguments[2];
-
-    fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json;charset=UTF-8',
-            'Accept': 'application/json'
-        },
-        body: JSON.stringify(payload)
-    })
-    .then(response => response.json())
-    .then(data => callback(data))
-    .catch(error => callback({success: false, message: "JS_FETCH_ERROR: " + error.toString()}));
-    """
-    try:
-        # 使用 execute_async_script 等待 fetch 回调
-        result = driver.execute_async_script(js_script, url, payload)
-        return result
-    except Exception as e:
-        log(f"浏览器控制台请求执行失败: {e}")
-        return None
-
-def get_captcha_ticket():
+def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
     """
     调用 AliV3min.py 获取 captchaTicket
+    超时3分钟则打印日志并强制结束，最多重试3次
+    返回 captchaTicket 或 None
     """
-    log("正在调用 AliV3min.py 获取验证码...")
+    for attempt in range(max_retries):
+        log(f"📞 调用 AliV3min.py 获取 captchaTicket (尝试 {attempt + 1}/{max_retries})...")
+        
+        try:
+            process = subprocess.Popen(
+                [sys.executable, 'AliV3min.py'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='ignore'
+            )
+            
+            output_lines = []
+            start_time = time.time()
+            captcha_ticket = None
+            
+            while True:
+                # 检查超时
+                elapsed = time.time() - start_time
+                if elapsed > timeout_seconds:
+                    log(f"⏰ AliV3min.py 超过 {timeout_seconds} 秒未完成，强制终止...")
+                    process.kill()
+                    process.wait()
+                    
+                    # 打印所有已收集的日志
+                    log("--- AliV3min.py 超时前的日志 ---")
+                    for line in output_lines:
+                        print(line, end='')
+                    log("--- 日志结束 ---")
+                    break
+                
+                # 非阻塞读取输出
+                try:
+                    line = process.stdout.readline()
+                    if line:
+                        output_lines.append(line)
+                        # 实时打印子进程输出
+                        print(f"  [AliV3min] {line.rstrip()}")
+                        
+                        # 检查是否包含 captchaTicket
+                        if "SUCCESS: Obtained CaptchaTicket:" in line:
+                            # 下一行应该是 ticket
+                            next_line = process.stdout.readline()
+                            if next_line:
+                                output_lines.append(next_line)
+                                captcha_ticket = next_line.strip()
+                                log(f"✅ 成功获取 captchaTicket: {captcha_ticket[:20]}...")
+                        
+                        # 也尝试从JSON响应中提取
+                        if '"captchaTicket"' in line:
+                            try:
+                                # 尝试找到JSON部分
+                                json_match = re.search(r'\{.*"captchaTicket"\s*:\s*"([^"]+)".*\}', line)
+                                if json_match:
+                                    captcha_ticket = json_match.group(1)
+                                    log(f"✅ 从JSON响应中提取到 captchaTicket: {captcha_ticket[:20]}...")
+                            except:
+                                pass
+                    
+                    # 检查进程是否结束
+                    if process.poll() is not None:
+                        # 读取剩余输出
+                        remaining = process.stdout.read()
+                        if remaining:
+                            output_lines.append(remaining)
+                            for rem_line in remaining.split('\n'):
+                                if rem_line.strip():
+                                    print(f"  [AliV3min] {rem_line}")
+                                    if "SUCCESS: Obtained CaptchaTicket:" in rem_line:
+                                        # 提取ticket (可能在同一行或下一行)
+                                        pass
+                        break
+                        
+                except Exception as e:
+                    time.sleep(0.1)
+                    continue
+            
+            if captcha_ticket:
+                return captcha_ticket
+            else:
+                log(f"❌ 未能从 AliV3min.py 输出中提取到 captchaTicket")
+                if attempt < max_retries - 1:
+                    log(f"⏳ 等待 3 秒后重试...")
+                    time.sleep(3)
+                    
+        except Exception as e:
+            log(f"❌ 调用 AliV3min.py 异常: {e}")
+            if attempt < max_retries - 1:
+                log(f"⏳ 等待 3 秒后重试...")
+                time.sleep(3)
     
-    # 获取当前脚本所在的绝对路径目录
-    current_dir = os.path.dirname(os.path.abspath(__file__))
+    return None
+
+def send_request_via_browser(driver, url, method='POST', body=None, headers=None):
+    """
+    通过浏览器控制台发送请求
+    返回响应的JSON对象或None
+    """
+    if headers is None:
+        headers = {}
+    
+    # 构建fetch请求的JavaScript代码
+    if body:
+        body_json = json.dumps(body)
+        js_code = f"""
+        return new Promise((resolve, reject) => {{
+            fetch('{url}', {{
+                method: '{method}',
+                headers: {{
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/plain, */*',
+                    ...{json.dumps(headers)}
+                }},
+                body: JSON.stringify({body_json}),
+                credentials: 'include'
+            }})
+            .then(response => response.json())
+            .then(data => resolve(JSON.stringify(data)))
+            .catch(error => resolve(JSON.stringify({{error: error.message}})));
+        }});
+        """
+    else:
+        js_code = f"""
+        return new Promise((resolve, reject) => {{
+            fetch('{url}', {{
+                method: '{method}',
+                headers: {{
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/plain, */*',
+                    ...{json.dumps(headers)}
+                }},
+                credentials: 'include'
+            }})
+            .then(response => response.json())
+            .then(data => resolve(JSON.stringify(data)))
+            .catch(error => resolve(JSON.stringify({{error: error.message}})));
+        }});
+        """
     
     try:
-        # 使用 communicate() 替代 readline()，防止死锁卡顿
-        # 传递 env=os.environ 确保子进程能找到 node 环境
-        process = subprocess.Popen(
-            [sys.executable, 'AliV3min.py'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, # 将错误也输出到标准输出方便抓取
-            text=True,
-            encoding='utf-8',
-            errors='ignore',
-            cwd=current_dir,  # 强制工作目录
-            env=os.environ    # 继承环境变量
-        )
+        result = driver.execute_async_script(f"""
+            var callback = arguments[arguments.length - 1];
+            {js_code.replace('return new Promise', 'new Promise')}.then(callback);
+        """)
+        if result:
+            return json.loads(result)
+        return None
+    except Exception as e:
+        log(f"❌ 浏览器请求失败: {e}")
+        return None
+
+def init_session_with_retry(driver, max_retries=3):
+    """
+    发送初始化会话请求，带重试机制
+    成功返回True，失败返回False
+    """
+    url = "https://passport.jlc.com/api/cas/login/get-init-session"
+    body = {"appId": "JLC_PORTAL_PC", "clientType": "PC-WEB"}
+    
+    for attempt in range(max_retries):
+        log(f"📡 发送初始化会话请求 (尝试 {attempt + 1}/{max_retries})...")
         
-        # 等待进程结束并获取所有输出，设置超时时间为 180秒
-        stdout_data, _ = process.communicate(timeout=180)
+        response = send_request_via_browser(driver, url, 'POST', body)
         
-        ticket = None
-        # 分析输出内容
-        lines = stdout_data.split('\n')
-        for line in lines:
-            line = line.strip()
-            # 1. 尝试解析 JSON 寻找 ticket
-            if '"captchaTicket":' in line:
+        if response:
+            log(f"📨 响应: {json.dumps(response, ensure_ascii=False)}")
+            if response.get('success') == True and response.get('code') == 200:
+                log("✅ 初始化会话成功")
+                return True
+            else:
+                log(f"⚠ 初始化会话响应异常: {response}")
+        else:
+            log("❌ 初始化会话请求失败，无响应")
+        
+        if attempt < max_retries - 1:
+            log("🔄 关闭浏览器并重新打开...")
+            driver.quit()
+            time.sleep(2)
+            # 重新创建浏览器 - 这里返回False让外层处理
+            return False
+    
+    return False
+
+def login_with_password(driver, username, password, captcha_ticket):
+    """
+    使用账号密码登录
+    返回: 'success', 'password_error', 'other_error', 响应数据
+    """
+    url = "https://passport.jlc.com/api/cas/login/with-password"
+    
+    # SM2加密账号密码
+    try:
+        encrypted_username = pwdEncrypt(username)
+        encrypted_password = pwdEncrypt(password)
+        log(f"🔐 账号密码已加密")
+    except Exception as e:
+        log(f"❌ SM2加密失败: {e}")
+        return 'other_error', None
+    
+    body = {
+        'username': encrypted_username,
+        'password': encrypted_password,
+        'isAutoLogin': False,
+        'captchaTicket': captcha_ticket
+    }
+    
+    log(f"📡 发送登录请求...")
+    response = send_request_via_browser(driver, url, 'POST', body)
+    
+    if response:
+        log(f"📨 登录响应: {json.dumps(response, ensure_ascii=False)[:200]}...")
+        
+        # 检查登录成功 (code=2017 表示成功)
+        if response.get('success') == True and response.get('code') == 2017:
+            auth_code = response.get('data', {}).get('authCode')
+            if auth_code:
+                log(f"✅ 登录成功! authCode: {auth_code[:20]}...")
+                return 'success', response
+        
+        # 检查密码错误
+        if response.get('code') == 10208:
+            log(f"❌ 账号或密码不正确: {response.get('message', '')}")
+            return 'password_error', response
+        
+        # 其他情况
+        log(f"⚠ 登录返回异常: code={response.get('code')}, message={response.get('message', '')}")
+        return 'other_error', response
+    
+    return 'other_error', None
+
+def verify_login_on_member_page(driver, max_retries=3):
+    """
+    验证登录成功 - 检查member.jlc.com页面上的客编
+    返回True/False
+    """
+    for attempt in range(max_retries):
+        log(f"🔍 验证登录状态 (尝试 {attempt + 1}/{max_retries})...")
+        
+        try:
+            driver.get("https://member.jlc.com/")
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            log("⏳ 页面加载完成，额外等待5秒...")
+            time.sleep(5)
+            
+            # 检查是否有客编信息
+            page_source = driver.page_source
+            
+            # 尝试多种匹配方式
+            patterns = [
+                r'客编\s*[A-Z0-9]+',
+                r'customer-popover-title.*?客编\s*[A-Z0-9]+',
+                r'customerCode.*?[A-Z0-9]{8}'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, page_source)
+                if match:
+                    log(f"✅ 验证登录成功! 找到客编信息: {match.group()}")
+                    return True
+            
+            # 也可以通过元素查找
+            try:
+                customer_elem = driver.find_element(By.XPATH, '//*[contains(text(), "客编")]')
+                if customer_elem:
+                    log(f"✅ 验证登录成功! 找到客编元素: {customer_elem.text[:50]}")
+                    return True
+            except:
+                pass
+            
+            log(f"⚠ 未找到客编信息，当前URL: {driver.current_url}")
+            log(f"⚠ 页面标题: {driver.title}")
+            
+        except Exception as e:
+            log(f"❌ 验证登录异常: {e}")
+        
+        if attempt < max_retries - 1:
+            log("🔄 刷新页面重试...")
+            time.sleep(2)
+    
+    return False
+
+def install_extension(driver, extension_path):
+    """
+    安装Chrome扩展
+    注意：需要在创建driver时就加载扩展，或使用特殊方式
+    """
+    # Chrome扩展需要在启动时加载，这里记录下
+    log(f"📦 扩展路径: {extension_path}")
+    # 实际扩展加载在创建driver时处理
+    return True
+
+def click_start_exam_button(driver, max_retries=3):
+    """
+    点击开始答题按钮
+    返回True/False
+    """
+    for attempt in range(max_retries):
+        log(f"🔍 查找开始答题按钮 (尝试 {attempt + 1}/{max_retries})...")
+        
+        try:
+            # 等待页面稳定
+            time.sleep(3)
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            
+            # 尝试查找按钮
+            try:
+                start_btn = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.ID, "startExamBtn"))
+                )
+                log("✅ 找到开始答题按钮，点击中...")
+                start_btn.click()
+                return True
+            except:
+                pass
+            
+            # 备用方式查找
+            try:
+                start_btn = driver.find_element(By.XPATH, '//button[contains(@class, "btn-primary")]//span[contains(text(), "开始答题")]/..')
+                log("✅ 通过XPath找到开始答题按钮，点击中...")
+                start_btn.click()
+                return True
+            except:
+                pass
+            
+            # 再尝试其他方式
+            try:
+                start_btn = driver.find_element(By.XPATH, '//*[contains(text(), "开始答题")]')
+                log("✅ 找到开始答题文本，点击中...")
+                start_btn.click()
+                return True
+            except:
+                pass
+            
+            log(f"⚠ 未找到开始答题按钮")
+            log(f"  当前页面标题: {driver.title}")
+            log(f"  当前页面URL: {driver.current_url}")
+            
+        except Exception as e:
+            log(f"❌ 查找按钮异常: {e}")
+        
+        if attempt < max_retries - 1:
+            log("🔄 刷新页面重试...")
+            driver.refresh()
+            time.sleep(3)
+    
+    return False
+
+def wait_for_exam_completion(driver, timeout_seconds=180):
+    """
+    等待答题完成（页面重定向）
+    返回True/False
+    """
+    log(f"⏳ 等待答题脚本执行完成 (最长等待 {timeout_seconds} 秒)...")
+    
+    initial_url = driver.current_url
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout_seconds:
+        current_url = driver.current_url
+        
+        # 检查URL是否变化（重定向到分数页面）
+        if current_url != initial_url:
+            # 检查是否是分数页面
+            if 'result' in current_url or 'score' in current_url or 'finish' in current_url:
+                log(f"✅ 检测到页面重定向到分数页面: {current_url}")
+                return True
+            # 可能是中间跳转
+            log(f"📍 页面跳转: {current_url}")
+            initial_url = current_url
+        
+        time.sleep(2)
+    
+    log(f"⏰ 等待超时 ({timeout_seconds} 秒)，脚本可能未成功执行")
+    return False
+
+def get_exam_score(driver):
+    """
+    获取考试分数
+    返回分数(int)或None
+    """
+    log("🔍 获取考试分数...")
+    
+    try:
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(2)
+        
+        # 尝试多种方式获取分数
+        # 方式1: class="score"
+        try:
+            score_elem = driver.find_element(By.CLASS_NAME, "score")
+            score_text = score_elem.text.strip()
+            score = int(re.search(r'\d+', score_text).group())
+            log(f"📊 获取到分数: {score}")
+            return score
+        except:
+            pass
+        
+        # 方式2: 通过XPath查找
+        try:
+            score_elem = driver.find_element(By.XPATH, '//span[@class="score"]')
+            score_text = score_elem.text.strip()
+            score = int(re.search(r'\d+', score_text).group())
+            log(f"📊 获取到分数: {score}")
+            return score
+        except:
+            pass
+        
+        # 方式3: 搜索页面中的分数
+        page_source = driver.page_source
+        score_match = re.search(r'<span[^>]*class="score"[^>]*>(\d+)</span>', page_source)
+        if score_match:
+            score = int(score_match.group(1))
+            log(f"📊 从页面源码获取到分数: {score}")
+            return score
+        
+        log("⚠ 未能找到分数元素")
+        return None
+        
+    except Exception as e:
+        log(f"❌ 获取分数异常: {e}")
+        return None
+
+def create_chrome_driver(with_extension=False, extension_path=None):
+    """
+    创建Chrome浏览器实例
+    """
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument(f"--user-data-dir={tempfile.mkdtemp()}")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    
+    # 加载扩展
+    if with_extension and extension_path and os.path.exists(extension_path):
+        chrome_options.add_extension(extension_path)
+        log(f"📦 已加载扩展: {extension_path}")
+    
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
+    return driver
+
+def process_single_account(username, password, account_index, total_accounts):
+    """
+    处理单个账号的完整流程
+    返回结果字典
+    """
+    result = {
+        'account_index': account_index,
+        'username': username,
+        'status': '未知',
+        'success': False,
+        'score': None,
+        'highest_score': 0,
+        'failure_reason': None,
+        'attempts': 0
+    }
+    
+    max_full_retries = 3  # 整个流程最多重试3次
+    
+    for full_attempt in range(max_full_retries):
+        result['attempts'] = full_attempt + 1
+        
+        if full_attempt > 0:
+            log(f"🔄 账号 {account_index} 整体流程第 {full_attempt + 1} 次重试...")
+        
+        log(f"{'='*60}")
+        log(f"📋 开始处理账号 {account_index}/{total_accounts}: {username[:3]}***{username[-3:] if len(username) > 6 else ''}")
+        log(f"{'='*60}")
+        
+        driver = None
+        
+        try:
+            # 步骤1: 创建浏览器并打开passport.jlc.com
+            log("🌐 步骤1: 打开 passport.jlc.com...")
+            driver = create_chrome_driver()
+            driver.get("https://passport.jlc.com")
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            time.sleep(2)
+            log("✅ 页面加载完成")
+            
+            # 步骤2: 发送初始化会话请求
+            log("🌐 步骤2: 初始化会话...")
+            init_retry_count = 0
+            init_success = False
+            
+            while init_retry_count < 3:
+                response = send_request_via_browser(
+                    driver, 
+                    "https://passport.jlc.com/api/cas/login/get-init-session",
+                    'POST',
+                    {"appId": "JLC_PORTAL_PC", "clientType": "PC-WEB"}
+                )
+                
+                if response:
+                    log(f"📨 初始化响应: {json.dumps(response, ensure_ascii=False)}")
+                    if response.get('success') == True and response.get('code') == 200:
+                        log("✅ 初始化会话成功")
+                        init_success = True
+                        break
+                
+                init_retry_count += 1
+                if init_retry_count < 3:
+                    log(f"⚠ 初始化失败，关闭浏览器重试 ({init_retry_count}/3)...")
+                    driver.quit()
+                    time.sleep(2)
+                    driver = create_chrome_driver()
+                    driver.get("https://passport.jlc.com")
+                    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                    time.sleep(2)
+            
+            if not init_success:
+                log("❌ 初始化会话失败超过3次，退出程序")
+                result['status'] = '初始化失败'
+                result['failure_reason'] = '初始化会话失败'
+                driver.quit()
+                sys.exit(1)  # 严重错误，直接退出
+            
+            # 步骤3: 调用AliV3min.py获取captchaTicket
+            log("🌐 步骤3: 获取验证码Ticket...")
+            driver.quit()  # 暂时关闭浏览器
+            
+            captcha_ticket = call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3)
+            
+            if not captcha_ticket:
+                log("❌ 获取captchaTicket失败超过3次，退出程序")
+                result['status'] = 'captchaTicket获取失败'
+                result['failure_reason'] = '验证码获取失败'
+                sys.exit(1)  # 严重错误，直接退出
+            
+            # 重新创建浏览器
+            driver = create_chrome_driver()
+            driver.get("https://passport.jlc.com")
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            time.sleep(2)
+            
+            # 步骤4: 发送登录请求
+            log("🌐 步骤4: 发送登录请求...")
+            login_status, login_response = login_with_password(driver, username, password, captcha_ticket)
+            
+            if login_status == 'password_error':
+                log(f"❌ 账号 {account_index} 账号或密码不正确，跳过该账号")
+                result['status'] = '密码错误'
+                result['failure_reason'] = '账号或密码不正确'
+                driver.quit()
+                return result  # 密码错误不重试，直接返回
+            
+            if login_status == 'other_error':
+                log(f"⚠ 登录返回其他错误，将重试整个流程...")
+                driver.quit()
+                continue  # 重试整个流程
+            
+            if login_status != 'success':
+                log(f"⚠ 登录未成功，将重试整个流程...")
+                driver.quit()
+                continue
+            
+            # 步骤5: 验证登录成功
+            log("🌐 步骤5: 验证登录状态...")
+            login_verified = False
+            
+            for verify_attempt in range(3):
+                if verify_login_on_member_page(driver):
+                    login_verified = True
+                    break
+                if verify_attempt < 2:
+                    log(f"⚠ 验证登录失败，重试整个流程...")
+                    break
+            
+            if not login_verified:
+                driver.quit()
+                continue  # 重试整个流程
+            
+            # 步骤6: 安装插件并打开答题页面
+            log("🌐 步骤6: 准备答题...")
+            driver.quit()
+            
+            # 检查插件是否存在
+            extension_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'JLCTK.crx')
+            if not os.path.exists(extension_path):
+                log(f"⚠ 警告: 未找到插件文件 {extension_path}")
+                extension_path = None
+            
+            # 重新创建带插件的浏览器
+            driver = create_chrome_driver(with_extension=True, extension_path=extension_path)
+            
+            # 需要重新登录（新的浏览器实例）
+            # 先打开passport获取cookie
+            driver.get("https://passport.jlc.com")
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            time.sleep(2)
+            
+            # 重新获取captchaTicket并登录
+            log("🔄 重新获取验证码并登录...")
+            captcha_ticket = call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3)
+            if not captcha_ticket:
+                log("❌ 重新获取captchaTicket失败")
+                driver.quit()
+                continue
+            
+            login_status, _ = login_with_password(driver, username, password, captcha_ticket)
+            if login_status != 'success':
+                log("❌ 重新登录失败")
+                driver.quit()
+                continue
+            
+            # 答题流程，最多重试3次
+            exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
+            
+            for exam_attempt in range(3):
+                log(f"📝 答题尝试 {exam_attempt + 1}/3...")
+                
+                driver.get(exam_url)
+                log("⏳ 等待页面加载和重定向...")
+                time.sleep(10)  # 等待重定向完成
+                
+                WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                log(f"📍 当前页面: {driver.current_url}")
+                log(f"📍 页面标题: {driver.title}")
+                
+                # 点击开始答题按钮
+                if not click_start_exam_button(driver, max_retries=3):
+                    log(f"❌ 无法找到开始答题按钮")
+                    log(f"  页面标题: {driver.title}")
+                    log(f"  页面URL: {driver.current_url}")
+                    if exam_attempt < 2:
+                        log("🔄 刷新页面重试...")
+                        continue
+                    else:
+                        result['failure_reason'] = '无法找到开始答题按钮'
+                        break
+                
+                log("⏳ 等待组卷 (约10秒)...")
+                time.sleep(10)
+                
+                # 等待答题完成（插件自动运行）
+                exam_completed = wait_for_exam_completion(driver, timeout_seconds=180)
+                
+                if not exam_completed:
+                    log(f"⏰ 答题超时 (超过3分钟)，脚本未成功执行")
+                    result['failure_reason'] = '脚本超过3分钟未执行成功'
+                    if exam_attempt < 2:
+                        log("🔄 重新开始答题...")
+                        continue
+                    else:
+                        break
+                
+                # 获取分数
+                time.sleep(3)
+                score = get_exam_score(driver)
+                
+                if score is not None:
+                    result['score'] = score
+                    if score > result['highest_score']:
+                        result['highest_score'] = score
+                    
+                    if score >= 60:
+                        log(f"🎉 答题成功! 分数: {score} 分 (≥60分)")
+                        result['status'] = '答题成功'
+                        result['success'] = True
+                        driver.quit()
+                        return result
+                    else:
+                        log(f"😢 分数不及格: {score} 分 (<60分)")
+                        result['failure_reason'] = f'最高得分{result["highest_score"]}'
+                        if exam_attempt < 2:
+                            log("🔄 重新答题...")
+                            continue
+                else:
+                    log("⚠ 无法获取分数")
+                    result['failure_reason'] = '无法获取分数'
+                    if exam_attempt < 2:
+                        continue
+            
+            # 答题3次都没过
+            if not result['success']:
+                result['status'] = '答题失败'
+                if result['highest_score'] > 0:
+                    result['failure_reason'] = f'最高得分{result["highest_score"]}'
+            
+            driver.quit()
+            return result
+            
+        except Exception as e:
+            log(f"❌ 处理账号时发生异常: {e}")
+            result['status'] = '异常'
+            result['failure_reason'] = str(e)
+            if driver:
                 try:
-                    # 尝试提取 json 部分
-                    start_idx = line.find('{')
-                    end_idx = line.rfind('}')
-                    if start_idx != -1 and end_idx != -1:
-                        json_str = line[start_idx:end_idx+1]
-                        data = json.loads(json_str)
-                        if isinstance(data, dict):
-                            # 路径可能在 data.captchaTicket 或 data.data.captchaTicket
-                            if 'captchaTicket' in data:
-                                ticket = data['captchaTicket']
-                            elif 'data' in data and isinstance(data['data'], dict):
-                                ticket = data['data'].get('captchaTicket')
+                    driver.quit()
                 except:
                     pass
             
-            # 2. 兼容 AliV3min 直接打印纯 Ticket 的情况 (32位字符)
-            if not ticket and len(line) == 32 and all(c in '0123456789abcdef' for c in line):
-                 ticket = line
-
-        if ticket:
-            log(f"SUCCESS: Obtained CaptchaTicket:\n{ticket}")
-            return ticket
-        else:
-            log("AliV3min.py 未能返回有效的 captchaTicket")
-            # 只有失败时才打印部分日志供调试
-            print("--- AliV3min Log (Last 500 chars) ---")
-            print(stdout_data[-500:])
-            print("-------------------------------------")
-            return None
-
-    except subprocess.TimeoutExpired:
-        process.kill()
-        log("AliV3min.py 运行超时 (3分钟)，已强制结束")
-        return None
-    except Exception as e:
-        log(f"调用 AliV3min.py 发生异常: {e}")
-        return None
-
-def process_account(account_idx, username, password, fail_exit_enabled):
-    """
-    单个账号的处理流程
-    """
-    log(f"=== 开始处理第 {account_idx} 个账号 ===")
+            if full_attempt < max_full_retries - 1:
+                log(f"⏳ 等待3秒后重试整个流程...")
+                time.sleep(3)
+                continue
+        
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                    log("🔒 浏览器已关闭")
+                except:
+                    pass
     
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new") # 新版无头模式
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
+    # 3次整体流程都失败
+    if not result['success'] and result['status'] == '未知':
+        result['status'] = '重试失败'
+        result['failure_reason'] = '整体流程重试3次均失败'
     
-    # 安装插件
-    crx_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'JLCTK.crx')
-    if os.path.exists(crx_path):
-        chrome_options.add_extension(crx_path)
-    else:
-        log(f"错误: 找不到插件文件 {crx_path}")
-        return False, "插件丢失"
+    return result
 
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.set_script_timeout(30)
-    
-    try:
-        # ================= Step 1: 初始化 Session =================
-        init_success = False
-        for i in range(3):
-            try:
-                log(f"打开护照页面 (尝试 {i+1}/3)...")
-                driver.get("https://passport.jlc.com")
-                
-                payload = {"appId":"JLC_PORTAL_PC","clientType":"PC-WEB"}
-                resp = execute_js_request(driver, "https://passport.jlc.com/api/cas/login/get-init-session", payload)
-                
-                if resp and resp.get("success") is True and resp.get("code") == 200:
-                    log("Session 初始化成功")
-                    init_success = True
-                    break
-                else:
-                    log(f"Session 初始化失败")
-                    driver.refresh()
-                    time.sleep(2)
-            except Exception as e:
-                log(f"Session 初始化异常: {e}")
-                driver.quit()
-                driver = webdriver.Chrome(options=chrome_options)
-                driver.set_script_timeout(30)
-
-        if not init_success:
-            log("错误: 超过3次无法初始化 Session，退出程序。")
-            driver.quit()
-            sys.exit(1)
-
-        # ================= Step 2: 获取 CaptchaTicket =================
-        captcha_ticket = None
-        for i in range(3):
-            captcha_ticket = get_captcha_ticket()
-            if captcha_ticket:
-                break
-            log(f"获取 CaptchaTicket 失败，重试 {i+1}/3...")
-            time.sleep(2)
-        
-        if not captcha_ticket:
-            log("错误: 超过3次无法获取 CaptchaTicket，退出程序。")
-            driver.quit()
-            sys.exit(1)
-
-        # ================= Step 3: 登录 =================
-        login_retry_max = 3
-        login_success = False
-        
-        for login_attempt in range(login_retry_max):
-            log(f"发送登录请求 (尝试 {login_attempt+1}/{login_retry_max})...")
-            
-            try:
-                enc_user = pwdEncrypt(username)
-                enc_pwd = pwdEncrypt(password)
-            except Exception as e:
-                log(f"加密失败: {e}")
-                return False, "加密失败"
-
-            login_payload = {
-                'username': enc_user,
-                'password': enc_pwd,
-                'isAutoLogin': False,
-                'captchaTicket': captcha_ticket
-            }
-            
-            resp = execute_js_request(driver, "https://passport.jlc.com/api/cas/login/with-password", login_payload)
-            
-            if resp:
-                if resp.get("success") is True and resp.get("code") == 2017:
-                    log("登录接口返回成功")
-                    login_success = True
-                    break
-                elif resp.get("code") == 10208:
-                    log("登录失败: 账号或密码不正确")
-                    return False, "账号或密码不正确" 
-                else:
-                    log(f"登录接口返回其他代码: {resp.get('code')}")
-            else:
-                log("登录请求无响应")
-            
-            time.sleep(2)
-
-        if not login_success:
-            return False, "登录接口多次失败"
-
-        # ================= Step 4: 验证登录 (客编) =================
-        verify_success = False
-        for verify_attempt in range(3):
-            try:
-                log("正在打开 member.jlc.com 验证登录...")
-                driver.get("https://member.jlc.com/")
-                
-                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                time.sleep(5) 
-                
-                page_source = driver.page_source
-                if "客编" in page_source:
-                    log("验证成功: 页面包含'客编'")
-                    verify_success = True
-                    break
-                else:
-                    log("验证失败: 页面未找到'客编'")
-            except Exception as e:
-                log(f"验证登录过程异常: {e}")
-            
-            log(f"验证重试 {verify_attempt+1}/3...")
-            driver.refresh()
-        
-        if not verify_success:
-            return False, "无法验证登录状态(找不到客编)"
-
-        # ================= Step 5: 考试流程 =================
-        exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
-        
-        final_score = 0
-        
-        for exam_retry in range(3):
-            log(f"=== 开始答题流程 (尝试 {exam_retry+1}/3) ===")
-            try:
-                driver.get(exam_url)
-                
-                btn_found = False
-                for refresh_i in range(3):
-                    try:
-                        WebDriverWait(driver, 15).until(
-                            EC.presence_of_element_located((By.ID, "startExamBtn"))
-                        )
-                        btn = driver.find_element(By.ID, "startExamBtn")
-                        log("找到开始答题按钮，点击...")
-                        driver.execute_script("arguments[0].click();", btn)
-                        btn_found = True
-                        break
-                    except Exception:
-                        log(f"未找到开始按钮，尝试刷新...")
-                        if refresh_i < 2:
-                            driver.refresh()
-                            time.sleep(3)
-                
-                if not btn_found:
-                    log("多次刷新仍未找到开始按钮，跳过本次重试")
-                    continue 
-
-                log("点击成功，等待组卷及插件运行(限时3分钟)...")
-                
-                exam_start_time = time.time()
-                score_found = False
-                
-                while time.time() - exam_start_time < 180: 
-                    try:
-                        if len(driver.find_elements(By.CSS_SELECTOR, "span.score")) > 0:
-                            score_elem = driver.find_element(By.CSS_SELECTOR, "span.score")
-                            score_text = score_elem.text.strip()
-                            if score_text.isdigit():
-                                final_score = int(score_text)
-                                log(f"检测到分数: {final_score}")
-                                score_found = True
-                                break
-                    except:
-                        pass
-                    time.sleep(1)
-                
-                if score_found:
-                    if final_score >= 60:
-                        return True, f"分数:{final_score}"
-                    else:
-                        log(f"分数 {final_score} 低于 60，需要重试")
-                else:
-                    log("答题超时 (3分钟未检测到分数)")
-            
-            except Exception as e:
-                log(f"答题流程发生异常: {e}")
-            
-        return False, f"最高得分{final_score}/脚本超时或失败"
-
-    except Exception as e:
-        log(f"账号流程发生未捕获异常: {e}")
-        return False, f"异常: {str(e)}"
-    finally:
-        driver.quit()
 
 def main():
+    """主函数"""
+    # 解析命令行参数
     if len(sys.argv) < 3:
-        print("用法: python jlc.py 账号1,账号2... 密码1,密码2... [失败退出标志]")
-        print("示例: python jlc.py user1,user2 pwd1,pwd2")
-        print("示例: python jlc.py user1,user2 pwd1,pwd2 true")
-        sys.exit(0)
-
-    users_str = sys.argv[1]
-    pwds_str = sys.argv[2]
-    
-    fail_exit_flag = False
-    if len(sys.argv) >= 4:
-        if sys.argv[3].lower() == 'true':
-            fail_exit_flag = True
-    
-    users = users_str.split(',')
-    pwds = pwds_str.split(',')
-    
-    if len(users) != len(pwds):
-        print("错误: 账号和密码数量不匹配")
+        print("用法: python jlc.py 账号1,账号2,账号3... 密码1,密码2,密码3... [失败退出标志]")
+        print("示例: python jlc.py user1,user2,user3 pwd1,pwd2,pwd3")
+        print("示例: python jlc.py user1,user2,user3 pwd1,pwd2,pwd3 true")
+        print("失败退出标志: 不传或任意值-关闭, true-开启(任意账号答题失败时返回非零退出码)")
         sys.exit(1)
     
-    results = []
+    # 解析账号密码
+    usernames = [u.strip() for u in sys.argv[1].split(',') if u.strip()]
+    passwords = [p.strip() for p in sys.argv[2].split(',') if p.strip()]
     
-    print(f"失败退出标志: {'开启' if fail_exit_flag else '关闭'}")
+    # 解析失败退出标志
+    enable_failure_exit = False
+    if len(sys.argv) >= 4:
+        enable_failure_exit = (sys.argv[3].lower() == 'true')
     
-    for i in range(len(users)):
-        user = users[i].strip()
-        pwd = pwds[i].strip()
-        if not user: continue
+    # 验证账号密码数量匹配
+    if len(usernames) != len(passwords):
+        log("❌ 错误: 账号和密码数量不匹配!")
+        log(f"   账号数量: {len(usernames)}, 密码数量: {len(passwords)}")
+        sys.exit(1)
+    
+    total_accounts = len(usernames)
+    
+    log("=" * 70)
+    log("🚀 立创题库自动答题程序启动")
+    log("=" * 70)
+    log(f"📊 账号总数: {total_accounts}")
+    log(f"🚪 失败退出功能: {'开启' if enable_failure_exit else '关闭'}")
+    log("=" * 70)
+    
+    # 存储所有结果
+    all_results = []
+    
+    # 处理每个账号
+    for i, (username, password) in enumerate(zip(usernames, passwords), 1):
+        log(f"\n{'#' * 70}")
+        log(f"# 账号 {i}/{total_accounts}")
+        log(f"{'#' * 70}\n")
         
-        # 传递 i+1 作为序号，不传递真实账号
-        success, msg = process_account(i+1, user, pwd, fail_exit_flag)
-        results.append({
-            "index": i+1,
-            "success": success,
-            "msg": msg
-        })
+        result = process_single_account(username, password, i, total_accounts)
+        all_results.append(result)
         
-        if i < len(users) - 1:
-            time.sleep(2)
-
-    print("\n" + "="*30)
-    print("所有账号运行结束，结果汇总:")
+        # 账号之间的间隔
+        if i < total_accounts:
+            wait_time = 5
+            log(f"\n⏳ 等待 {wait_time} 秒后处理下一个账号...\n")
+            time.sleep(wait_time)
     
-    all_success = True
-    pass_count = 0
+    # 输出总结
+    log("\n" + "=" * 70)
+    log("📊 答题结果总结")
+    log("=" * 70)
     
-    for res in results:
-        status = "立创题库答题成功✅" if res['success'] else "立创题库答题失败❌"
-        # 结果汇总也只显示序号
-        print(f"账号{res['index']}")
-        if res['success']:
-            print(f"{status} {res['msg']}")
-            pass_count += 1
+    success_count = 0
+    failed_accounts = []
+    failed_details = []
+    
+    for result in all_results:
+        account_index = result['account_index']
+        username = result['username']
+        masked_username = f"{username[:3]}***" if len(username) > 3 else username
+        
+        log(f"\n账号 {account_index} ({masked_username}):")
+        
+        if result['success']:
+            score = result.get('score', result.get('highest_score', 0))
+            log(f"  立创题库答题成功 ✅ 分数: {score}")
+            success_count += 1
         else:
-            print(f"{status} 原因:{res['msg']}")
-            all_success = False
-        print("-" * 20)
+            failure_reason = result.get('failure_reason', '未知原因')
+            
+            # 根据不同情况显示不同信息
+            if result['status'] == '密码错误':
+                log(f"  立创题库答题失败 ❌ 原因: 账号或密码错误")
+                failed_details.append(f"账号{account_index}: 密码错误")
+            elif result['highest_score'] > 0:
+                log(f"  立创题库答题失败 ❌ 原因: 最高得分 {result['highest_score']}")
+                failed_details.append(f"账号{account_index}: 最高得分{result['highest_score']}")
+            elif '3分钟' in str(failure_reason):
+                log(f"  立创题库答题失败 ❌ 原因: 脚本超过3分钟未执行成功")
+                failed_details.append(f"账号{account_index}: 脚本超时")
+            else:
+                log(f"  立创题库答题失败 ❌ 原因: {failure_reason}")
+                failed_details.append(f"账号{account_index}: {failure_reason}")
+            
+            failed_accounts.append(account_index)
+    
+    # 统计信息
+    log("\n" + "-" * 70)
+    pass_rate = (success_count / total_accounts * 100) if total_accounts > 0 else 0
+    log(f"📈 答题通过率: {success_count}/{total_accounts} ({pass_rate:.1f}%)")
+    
+    if failed_accounts:
+        log(f"❌ 答题未通过的账号: {', '.join(map(str, failed_accounts))}")
+        for detail in failed_details:
+            log(f"   - {detail}")
+    else:
+        log("🎉 所有账号答题全部通过!")
+    
+    log("=" * 70)
+    
+    # 根据失败退出标志决定退出码
+    if enable_failure_exit and pass_rate < 100:
+        log("❌ 检测到有账号答题失败，且开启了失败退出功能，返回退出码 1")
+        sys.exit(1)
+    else:
+        log("✅ 程序执行完成，返回退出码 0")
+        sys.exit(0)
 
-    pass_rate = (pass_count / len(results)) * 100 if results else 0
-    print(f"总计: {len(results)}, 通过: {pass_count}, 通过率: {pass_rate:.2f}%")
-    
-    if fail_exit_flag:
-        if not all_success:
-            print("触发失败退出标志，返回退出码 1")
-            sys.exit(1)
-    
-    sys.exit(0)
 
 if __name__ == "__main__":
     main()
