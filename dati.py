@@ -18,7 +18,7 @@ try:
     from Utils import pwdEncrypt
     print("✅ 成功加载 SM2 加密依赖")
 except ImportError:
-    print("❌ 错误: 未找到 Utils.py 或 pwdEncrypt 函数，请确保同目录下存在该文件")
+    print("❌ 错误: 未找到 Utils.py ，请确保同目录下存在该文件")
     sys.exit(1)
 
 
@@ -33,7 +33,7 @@ def log(msg, show_time=True):
 
 def create_chrome_driver():
     """
-    创建Chrome浏览器实例 - 无插件，纯净模式+防检测
+    创建Chrome浏览器实例
     """
     chrome_options = Options()
     
@@ -71,7 +71,7 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
         log(f"📞 正在调用 登录脚本 获取 captchaTicket (尝试 {attempt + 1}/{max_retries})...")
         try:
             if not os.path.exists('AliV3min.py'):
-                log("❌ 错误: 找不到 AliV3min.py")
+                log("❌ 错误: 找不到登录依赖 AliV3min.py")
                 return None
 
             process = subprocess.Popen(
@@ -124,7 +124,7 @@ def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=3):
             if captcha_ticket:
                 return captcha_ticket
             else:
-                log(f"❌ 本次尝试未获取到 Ticket")
+                log(f"❌ 本次尝试未获取到 captchaTicket")
                 time.sleep(2)
         except Exception as e:
             log(f"❌ 调用登录脚本异常: {e}")
@@ -172,7 +172,7 @@ def send_request_via_browser(driver, url, method='POST', body=None):
         except json.JSONDecodeError:
             return None
     except Exception as e:
-        log(f"❌ 浏览器请求执行脚本失败: {e}")
+        log(f"❌ 浏览器请求执行失败: {e}")
         return None
 
 
@@ -230,7 +230,7 @@ def verify_login_on_member_page(driver, max_retries=3):
 
 
 def switch_to_exam_iframe(driver, wait_time=10):
-    """尝试切换到答题系统的iframe，增加等待时间"""
+    """尝试切换到答题系统的iframe"""
     try:
         driver.switch_to.default_content()
         # 先等待iframe出现
@@ -264,32 +264,29 @@ def extract_real_exam_url(driver, retry_attempt=0):
     """
     在 member.jlc.com 页面内等待iframe加载并出现开始按钮，
     然后提取真实URL。
-    优化：根据重试次数调整等待策略
     """
     log("🔗 正在打开立创答题中转页...")
     member_exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
     driver.get(member_exam_url)
     
-    # 根据重试次数调整等待时间
-    if retry_attempt == 0:
-        wait_time = 30  # 首次等待更长时间
-        log("⏳ 等待页面及 Iframe 加载 (30s)...")
-    else:
-        wait_time = 20
-        log("⏳ 等待页面及 Iframe 加载 (20s)...")
+    wait_time = 15
+    log("⏳ 等待页面及 Iframe 加载 (15s)...")
     
     try:
         # 先等待页面基本加载
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(3)  # 额外等待，让iframe有时间渲染
+        time.sleep(3)
         
         # 尝试切换到iframe
         if switch_to_exam_iframe(driver, wait_time=wait_time):
             try:
-                # 等待按钮出现，说明已经是 kaoshixing 的页面了
+                # 关键优化: 等待按钮出现并且可点击,确保内容完全加载
                 WebDriverWait(driver, wait_time).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="startExamBtn"] | //span[contains(text(), "开始答题")]'))
+                    EC.element_to_be_clickable((By.XPATH, '//*[@id="startExamBtn"]'))
                 )
+                # 额外等待,确保页面完全稳定
+                time.sleep(2)
+                
                 # 提取当前 iframe 的真实 URL
                 real_url = driver.execute_script("return window.location.href;")
                 driver.switch_to.default_content()
@@ -297,6 +294,8 @@ def extract_real_exam_url(driver, retry_attempt=0):
                 if real_url and "kaoshixing.com" in real_url:
                     log(f"✅ 提取答题链接成功")
                     return real_url
+                else:
+                    log(f"⚠ 提取的URL无效: {real_url}")
             except TimeoutException:
                 log(f"⚠ iframe 内容加载超时")
                 driver.switch_to.default_content()
@@ -323,7 +322,7 @@ def click_start_exam_button(driver):
                     elem.click()
                 except:
                     driver.execute_script("arguments[0].click();", elem)
-                log("✅ 点击开始答题按钮")
+                log("✅ 已点击开始答题按钮")
                 return True
         except:
             continue
@@ -367,7 +366,7 @@ def wait_for_exam_completion_with_js(driver, timeout_seconds=180):
     """
     等待 JS 执行完成并跳转到结果页
     """
-    log(f"⏳ 等待进入试卷页面...")
+    log(f"⏳ 等待组卷...")
     start_time = time.time()
     last_log_time = start_time
     js_injected = False
@@ -439,74 +438,67 @@ def get_exam_score(driver):
 
 
 def process_single_account(username, password, account_index, total_accounts):
-    """处理单个账号"""
+    """处理单个账号 - 添加完整的重试机制"""
     result = {'account_index': account_index, 'status': '未知', 'success': False, 'score': 0, 'highest_score': 0, 'failure_reason': None}
     
-    # --- 步骤 1: 提取真实考试链接 (最多重试3次) ---
-    real_exam_url = None
-    driver = None
-    
-    try:
-        log(f"🌐 启动浏览器 (账号 {account_index})...")
-        driver = create_chrome_driver()
+    # 整个流程最多重试3次
+    for full_retry in range(3):
+        driver = None
+        real_exam_url = None
         
-        # 登录流程
-        driver.get("https://passport.jlc.com")
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        if not perform_init_session(driver): 
-            raise Exception("初始化 Session 失败")
-        captcha_ticket = call_aliv3min_with_timeout()
-        if not captcha_ticket: 
-            raise Exception("获取 CaptchaTicket 失败")
-        status, login_res = login_with_password(driver, username, password, captcha_ticket)
-        if status == 'password_error':
-            result['status'] = '密码错误'
-            result['failure_reason'] = '账号或密码不正确'
-            driver.quit()
-            return result
-        if status != 'success': 
-            raise Exception("登录失败")
-        if not verify_login_on_member_page(driver): 
-            raise Exception("登录验证失败")
-        
-        # 提取链接 - 优化重试策略
-        for extract_attempt in range(3):
-            real_exam_url = extract_real_exam_url(driver, retry_attempt=extract_attempt)
-            if real_exam_url:
-                break
-            log(f"⚠ 提取链接失败，重试 ({extract_attempt+1}/3)...")
-            time.sleep(3)  # 增加重试间隔
-            
-        if not real_exam_url:
-            log("❌ 3次尝试均无法提取考试链接，跳过该账号")
-            result['failure_reason'] = "无法提取考试链接"
-            driver.quit()
-            return result
-            
-    except Exception as e:
-        log(f"❌ 准备阶段异常: {e}")
-        if driver: 
-            driver.quit()
-        return result
-
-    # --- 步骤 2: 答题流程 (复用已提取的链接，最多重试3次) ---
-    for exam_retry in range(3):
         try:
-            log(f"📝 开始答题流程 ({exam_retry+1}/3)...")
+            log(f"🌐 启动浏览器 (账号 {account_index}) - 尝试 {full_retry+1}/3...")
+            driver = create_chrome_driver()
+            
+            # --- 步骤 1: 登录流程 ---
+            driver.get("https://passport.jlc.com")
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            
+            if not perform_init_session(driver): 
+                raise Exception("初始化 Session 失败")
+                
+            captcha_ticket = call_aliv3min_with_timeout()
+            if not captcha_ticket: 
+                raise Exception("获取 CaptchaTicket 失败")
+                
+            status, login_res = login_with_password(driver, username, password, captcha_ticket)
+            if status == 'password_error':
+                result['status'] = '密码错误'
+                result['failure_reason'] = '账号或密码不正确'
+                if driver:
+                    driver.quit()
+                return result  # 密码错误不重试
+                
+            if status != 'success': 
+                raise Exception("登录失败")
+                
+            if not verify_login_on_member_page(driver): 
+                raise Exception("登录验证失败")
+            
+            # --- 步骤 2: 提取链接 (内部重试3次) ---
+            for extract_attempt in range(3):
+                real_exam_url = extract_real_exam_url(driver, retry_attempt=extract_attempt)
+                if real_exam_url:
+                    break
+                log(f"⚠ 提取链接失败，重试 ({extract_attempt+1}/3)...")
+                time.sleep(3)
+                
+            if not real_exam_url:
+                raise Exception("无法提取考试链接")
+            
+            # --- 步骤 3: 答题流程 ---
+            log(f"📝 开始答题流程...")
             
             # 直接跳转到真实考试页面
             driver.get(real_exam_url)
             
             # 点击开始按钮
             if not click_start_exam_button(driver):
-                log("❌ 找不到开始按钮，刷新重试")
-                continue
+                raise Exception("找不到开始按钮")
                 
             # 注入 JS 并等待结果
             if not wait_for_exam_completion_with_js(driver):
-                log("❌ 答题超时")
-                result['failure_reason'] = '脚本超过3分钟未执行成功'
-                continue
+                raise Exception("答题超时")
                 
             # 获取分数
             score = get_exam_score(driver)
@@ -520,16 +512,26 @@ def process_single_account(username, password, account_index, total_accounts):
                     driver.quit()
                     return result
                 else:
-                    log(f"😢 分数未达标: {score}")
+                    log(f"😢 分数未达标: {score}, 将重试")
                     result['failure_reason'] = f"最高得分{result['highest_score']}"
             else:
-                log("⚠ 未能获取到分数")
+                raise Exception("未能获取到分数")
                 
         except Exception as e:
-            log(f"❌ 答题过程异常: {e}")
-            
-    driver.quit()
+            log(f"❌ 准备阶段异常: {e}")
+            if full_retry < 2:  # 还有重试机会
+                log(f"⏳ 等待5秒后重试...")
+                time.sleep(5)
+            else:
+                result['failure_reason'] = str(e)
+        finally:
+            if driver:
+                driver.quit()
+    
+    # 3次完整流程都失败
     result['status'] = '失败'
+    if not result['failure_reason']:
+        result['failure_reason'] = '3次尝试均失败'
     return result
 
 
@@ -557,7 +559,7 @@ def main():
             time.sleep(5)
         
     log("\n" + "="*40, show_time=False)
-    log("📊 最终结果总结", show_time=False)
+    log("📊 立创答题结果总结", show_time=False)
     log("="*40, show_time=False)
     has_failure = False
     for res in all_results:
