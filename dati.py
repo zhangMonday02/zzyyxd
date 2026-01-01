@@ -83,6 +83,18 @@ def wait_for_page_load(driver, timeout=20):
         log("⚠ 页面加载等待超时")
         return False
 
+def debug_extension_installation(driver):
+    """
+    3. 截图验证插件是否安装
+    """
+    try:
+        log("📸 正在检查插件安装情况 (chrome://extensions/)...")
+        driver.get("chrome://extensions/")
+        time.sleep(2) # 等待渲染
+        driver.save_screenshot("extensions.png")
+        log("📸 截图已保存至 extensions.png，请检查。")
+    except Exception as e:
+        log(f"⚠ 无法截取插件列表: {e}")
 
 def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=1): # 临时改为1
     """调用 AliV3min.py 获取 captchaTicket"""
@@ -254,24 +266,6 @@ def verify_login_on_member_page(driver, max_retries=1): # 临时改为1
     return False
 
 
-def switch_to_exam_iframe(driver):
-    """尝试切换到答题系统的iframe"""
-    try:
-        driver.switch_to.default_content()
-        iframe = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, "client_context_frame")))
-        driver.switch_to.frame(iframe)
-        return True
-    except:
-        try:
-            driver.switch_to.default_content()
-            iframe = driver.find_element(By.NAME, "context_iframe")
-            driver.switch_to.frame(iframe)
-            return True
-        except:
-            pass
-    return False
-
-
 def extract_and_visit_exam_iframe(driver):
     """提取真实URL跳转"""
     log("🔗 正在打开嘉立创中转页...")
@@ -284,7 +278,14 @@ def extract_and_visit_exam_iframe(driver):
     try:
         WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
         
-        if switch_to_exam_iframe(driver):
+        # 尝试切换到 iframe (此时还在member.jlc.com)
+        driver.switch_to.default_content()
+        try:
+            iframe = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.ID, "client_context_frame"))
+            )
+            driver.switch_to.frame(iframe)
+            
             log("✅ 已切入 Iframe，等待[开始答题]按钮出现...")
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.XPATH, '//*[@id="startExamBtn"] | //span[contains(text(), "开始答题")]'))
@@ -302,8 +303,8 @@ def extract_and_visit_exam_iframe(driver):
                 return True
             else:
                 log(f"❌ 提取到的 URL 不正确: {real_url}")
-        else:
-            log("❌ 无法切入 Iframe")
+        except:
+            log("❌ 无法切入 Iframe 或找到元素")
             
     except Exception as e:
         log(f"❌ 提取 URL 过程超时或出错: {e}")
