@@ -626,7 +626,26 @@ def perform_login_flow(driver, username, password, max_retries=3):
 
 
 def process_single_account(username, password, account_index, total_accounts):
-    """处理单个账号 - 重构后的流程"""
+    """处理单个账号 - 支持多密码重试和断点记忆"""
+    backup_passwords = [
+        "Aa123123",
+        "Zz123123",
+        "Qq123123",
+        "Ss123123",
+        "Xx123123",
+        "Yuanxd20031024",
+        "jjl1775774A",
+        "qeowowe5472",
+        "Wyf349817236",
+        "Bb123123"
+    ]
+    
+    # 构建密码候选列表（去重并保持顺序，优先尝试传入的密码）
+    all_passwords = [password]
+    for bp in backup_passwords:
+        if bp != password:
+            all_passwords.append(bp)
+    
     result = {
         'account_index': account_index, 
         'status': '未知', 
@@ -636,58 +655,89 @@ def process_single_account(username, password, account_index, total_accounts):
         'failure_reason': None
     }
     
-    driver = None
+    current_pwd_idx = 0
+    max_session_retries = 3  # 定义全流程重试的最大次数（针对非密码错误的异常）
     
-    try:
-        log(f"🌐 启动浏览器 (账号 {account_index})...")
-        driver = create_chrome_driver()
+    # 外层循环：处理非密码错误导致的“全流程重试”
+    for session_attempt in range(max_session_retries):
+        driver = None
         
-        # --- 阶段 1: 登录流程（失败会完全重启浏览器，最多3次） ---
-        login_status, driver = perform_login_flow(driver, username, password, max_retries=3)
-        
-        if login_status == 'password_error':
-            result['status'] = '密码错误'
-            result['failure_reason'] = '账号或密码不正确'
-            if driver:
-                driver.quit()
-            return result
-        
-        if login_status != 'success':
-            result['status'] = '登录失败'
-            result['failure_reason'] = '登录流程失败'
-            if driver:
-                driver.quit()
-            return result
-        
-        # --- 阶段 2: 答题流程（使用同一浏览器实例重试，最多3次） ---
-        exam_success, score = perform_exam_process(driver, max_retries=3)
-        
-        if exam_success and score is not None:
-            result['score'] = score
-            result['highest_score'] = score
-            if score >= 60:
-                log(f"🎉 答题通过! 分数: {score}")
-                result['success'] = True
-                result['status'] = '答题成功'
-            else:
-                log(f"😢 分数未达标: {score}")
-                result['status'] = '分数不达标'
-                result['failure_reason'] = f"得分{score}分"
-        else:
-            result['status'] = '答题失败'
-            result['failure_reason'] = '答题流程失败'
-        
-    except Exception as e:
-        log(f"❌ 账号处理异常: {e}")
-        result['status'] = '异常'
-        result['failure_reason'] = str(e)
-    finally:
-        if driver:
+        # 内层循环：遍历密码列表
+        while current_pwd_idx < len(all_passwords):
+            current_password = all_passwords[current_pwd_idx]
+            log(f"🌐 启动浏览器 (账号 {account_index} - 尝试密码 {current_pwd_idx + 1}/{len(all_passwords)})...")
+            
+            driver = create_chrome_driver()
+            
             try:
-                driver.quit()
-            except:
-                pass
+                # --- 阶段 1: 登录流程 ---
+                # perform_login_flow 内部已有3次重试，如果它返回 login_failed，说明环境恶劣
+                login_status, driver = perform_login_flow(driver, username, current_password, max_retries=3)
+                
+                if login_status == 'password_error':
+                    log(f"❌ 密码错误: {current_password}，尝试下一个备用密码...")
+                    # 明确证明密码错误，永久跳过此密码
+                    current_pwd_idx += 1
+                    if driver:
+                        driver.quit()
+                    continue  # 立即进入下一次内层循环尝试新密码
+                
+                if login_status != 'success':
+                    # 登录失败，但不是明确的密码错误（如网络问题、验证码问题等）
+                    # 正常进入全流程重试，记忆密码进度（即不增加 current_pwd_idx）
+                    log(f"⚠ 登录流程异常 (非密码错误)，准备重新开始全流程...")
+                    if driver:
+                        driver.quit()
+                    # 跳出内层循环，让外层循环 (session_attempt) 触发重试
+                    # 此时 current_pwd_idx 未改变，下次重试仍用当前密码
+                    break 
+                
+                # --- 阶段 2: 答题流程 ---
+                # 登录成功，开始答题
+                exam_success, score = perform_exam_process(driver, max_retries=3)
+                
+                if exam_success and score is not None:
+                    result['score'] = score
+                    result['highest_score'] = score
+                    if score >= 60:
+                        log(f"🎉 答题通过! 分数: {score}")
+                        result['success'] = True
+                        result['status'] = '答题成功'
+                    else:
+                        log(f"😢 分数未达标: {score}")
+                        result['status'] = '分数不达标'
+                        result['failure_reason'] = f"得分{score}分"
+                else:
+                    result['status'] = '答题失败'
+                    result['failure_reason'] = '答题流程失败'
+                
+                # 任务完成（无论分数是否达标），退出函数
+                if driver: driver.quit()
+                return result
+
+            except Exception as e:
+                log(f"❌ 账号处理异常: {e}")
+                if driver: 
+                    try: driver.quit()
+                    except: pass
+                # 发生未捕获异常，视为非密码错误，跳出内层循环进行全流程重试
+                break
+        
+        # 检查是否因为所有密码都试完了才退出内层循环
+        if current_pwd_idx >= len(all_passwords):
+            log("❌ 所有候选密码均提示错误，放弃该账号")
+            result['status'] = '所有密码错误'
+            result['failure_reason'] = '所有候选密码均验证失败'
+            return result
+        
+        # 如果还在外层循环中，说明是触发了全流程重试
+        if session_attempt < max_session_retries - 1:
+            log(f"⏳ 等待5秒后进行第 {session_attempt + 2} 次全流程重试 (从密码 {current_pwd_idx + 1} 继续)...")
+            time.sleep(5)
     
+    # 外层循环结束，说明多次重试均失败（非密码错误）
+    result['status'] = '流程异常'
+    result['failure_reason'] = '多次尝试登录或答题均失败(非密码错误)'
     return result
 
 
