@@ -302,12 +302,45 @@ def verify_login_on_member_page(driver, max_retries=3):
     return False
 
 
+def switch_to_exam_iframe(driver):
+    """
+    尝试切换到答题系统的iframe
+    """
+    try:
+        # 优先尝试 id="client_context_frame"
+        iframe = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.ID, "client_context_frame"))
+        )
+        driver.switch_to.frame(iframe)
+        log("✅ 已切换到答题 Iframe (client_context_frame)")
+        return True
+    except:
+        try:
+            # 备用尝试 name="context_iframe"
+            iframe = driver.find_element(By.NAME, "context_iframe")
+            driver.switch_to.frame(iframe)
+            log("✅ 已切换到答题 Iframe (context_iframe)")
+            return True
+        except:
+            pass
+    
+    return False
+
+
 def click_start_exam_button(driver):
     """
     点击开始答题
-    不重试，找不到直接输出调试信息并返回False
+    包含iframe切换逻辑
     """
     log(f"🔍 检查开始答题按钮...")
+    
+    # 1. 先尝试在当前上下文找（万一已经切进去了）
+    # 2. 如果没找到，尝试切入 iframe 再找
+    
+    found = False
+    
+    # 尝试切入 iframe
+    switch_to_exam_iframe(driver)
     
     # 尝试多种定位方式
     xpaths = [
@@ -318,45 +351,62 @@ def click_start_exam_button(driver):
     
     for xpath in xpaths:
         try:
-            elem = driver.find_element(By.XPATH, xpath)
+            elem = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.XPATH, xpath))
+            )
+            # elem = driver.find_element(By.XPATH, xpath)
             if elem.is_displayed():
                 try:
                     elem.click()
                 except:
                     driver.execute_script("arguments[0].click();", elem)
                 log("✅ 点击开始答题按钮")
-                return True
+                found = True
+                break
         except:
             continue
     
-    # 如果没找到，输出调试信息
-    log("❌ 未找到开始答题按钮，输出调试信息:")
-    log(f"📍 当前URL: {driver.current_url}")
-    log(f"📄 页面标题: {driver.title}")
-    try:
-        page_source = driver.page_source
-        log("📝 页面源码 (HTML):")
-        print(page_source)
-        log("----------------------------------------")
-    except Exception as e:
-        log(f"❌ 获取页面源码失败: {e}")
+    if not found:
+        # 如果没找到，切回主文档再试一次（防止已经在iframe里但切错了）
+        driver.switch_to.default_content()
+        # 再次尝试切入 iframe (为了稳健性，这里可以根据实际情况调整)
+        # 但通常如果在 iframe 里没找到，说明真的没加载出来或者结构变了
+        log("❌ 未找到开始答题按钮")
+        return False
         
-    return False
+    return True
 
 
 def wait_for_exam_completion(driver, timeout_seconds=180):
     """等待答题完成 (URL变化)"""
     log(f"⏳ 等待答题脚本执行 (最长 {timeout_seconds}s)...")
     start_time = time.time()
-    initial_url = driver.current_url
+    
+    # 注意：答题页面可能在 iframe 里跳转，导致 driver.current_url 拿到的还是主页面的 URL
+    # 我们需要检测 iframe 内部的 URL 变化，或者页面元素变化
+    
+    # 策略：检查页面是否出现了分数元素，或者 URL 是否包含 result
     
     while time.time() - start_time < timeout_seconds:
         try:
-            current_url = driver.current_url
-            # 只要URL变了，且包含结果页特征
-            if current_url != initial_url and ('result' in current_url or 'score' in current_url):
-                log(f"✅ 检测到跳转至结果页: {current_url}")
-                return True
+            # 确保在 iframe 里 (因为点击按钮后页面跳转是在 iframe 内发生的)
+            # switch_to_exam_iframe(driver) # 不需要频繁切，如果已经在里面了
+            
+            # 检查是否有分数元素
+            try:
+                if driver.find_elements(By.CLASS_NAME, "score") or \
+                   driver.find_elements(By.XPATH, '//*[contains(text(), "分数")]'):
+                    log("✅ 检测到分数元素，答题结束")
+                    return True
+            except:
+                pass
+
+            # 检查 URL (如果iframe跳转会反应在driver吗？通常如果不切回去，driver对应iframe)
+            # current_url = driver.current_url 
+            # if 'result' in current_url or 'score' in current_url:
+            #     log(f"✅ 检测到跳转至结果页: {current_url}")
+            #     return True
+            
         except:
             pass
         time.sleep(2)
@@ -368,6 +418,10 @@ def wait_for_exam_completion(driver, timeout_seconds=180):
 def get_exam_score(driver):
     """获取分数"""
     log("🔍 获取分数...")
+    
+    # 确保在 iframe 里
+    switch_to_exam_iframe(driver)
+    
     try:
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(2)
@@ -454,8 +508,8 @@ def process_single_account(username, password, account_index, total_accounts):
                 # 打开链接
                 driver.get(exam_url)
                 
-                # 硬性等待 20 秒
-                log("⏳ 打开答题链接，硬性等待 20 秒...")
+                # 硬性等待 20 秒，等待页面和iframe加载
+                log("⏳ 打开答题链接，等待 20 秒...")
                 time.sleep(20)
                 
                 # 检查并点击开始按钮
