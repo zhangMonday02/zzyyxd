@@ -83,9 +83,10 @@ def wait_for_page_load(driver, timeout=20):
         log("⚠ 页面加载等待超时")
         return False
 
+
 def debug_extension_installation(driver):
     """
-    3. 截图验证插件是否安装
+    3. 截图验证插件是否安装 (修复了未定义的问题)
     """
     try:
         log("📸 正在检查插件安装情况 (chrome://extensions/)...")
@@ -96,7 +97,8 @@ def debug_extension_installation(driver):
     except Exception as e:
         log(f"⚠ 无法截取插件列表: {e}")
 
-def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=1): # 临时改为1
+
+def call_aliv3min_with_timeout(timeout_seconds=180, max_retries=1): 
     """调用 AliV3min.py 获取 captchaTicket"""
     for attempt in range(max_retries):
         log(f"📞 调用 AliV3min.py 获取 captchaTicket (尝试 {attempt + 1}/{max_retries})...")
@@ -214,7 +216,7 @@ def send_request_via_browser(driver, url, method='POST', body=None):
         return None
 
 
-def perform_init_session(driver, max_retries=1): # 临时改为1
+def perform_init_session(driver, max_retries=1):
     """执行 Session 初始化"""
     for i in range(max_retries):
         log(f"📡 初始化会话 (Attempt {i+1})...")
@@ -248,7 +250,7 @@ def login_with_password(driver, username, password, captcha_ticket):
     return 'other_error', response
 
 
-def verify_login_on_member_page(driver, max_retries=1): # 临时改为1
+def verify_login_on_member_page(driver, max_retries=1):
     """验证登录"""
     for attempt in range(max_retries):
         log(f"🔍 验证登录状态 ({attempt + 1}/{max_retries})...")
@@ -266,57 +268,78 @@ def verify_login_on_member_page(driver, max_retries=1): # 临时改为1
     return False
 
 
-def extract_and_visit_exam_iframe(driver):
-    """提取真实URL跳转"""
-    log("🔗 正在打开嘉立创中转页...")
-    member_exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
-    driver.get(member_exam_url)
-    wait_for_page_load(driver)
-    
-    log("⏳ 等待页面及 Iframe 加载 (20s)...")
-    
+def switch_to_exam_iframe(driver):
+    """尝试切换到答题系统的iframe"""
     try:
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
-        
-        # 尝试切换到 iframe (此时还在member.jlc.com)
         driver.switch_to.default_content()
+        # 增加显式等待，防止页面还在渲染
+        iframe = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "client_context_frame"))
+        )
+        driver.switch_to.frame(iframe)
+        return True
+    except:
         try:
-            iframe = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.ID, "client_context_frame"))
-            )
+            driver.switch_to.default_content()
+            iframe = driver.find_element(By.NAME, "context_iframe")
             driver.switch_to.frame(iframe)
-            
-            log("✅ 已切入 Iframe，等待[开始答题]按钮出现...")
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.XPATH, '//*[@id="startExamBtn"] | //span[contains(text(), "开始答题")]'))
-            )
-            log("✅ 按钮已出现，提取真实 URL...")
-            
-            real_url = driver.execute_script("return window.location.href;")
-            driver.switch_to.default_content()
-            
-            if real_url and "kaoshixing.com" in real_url:
-                log(f"✅ 提取成功: {real_url}")
-                log("🚀 跳转到真实考试页面 (顶层窗口)...")
-                driver.get(real_url)
-                wait_for_page_load(driver)
-                return True
-            else:
-                log(f"❌ 提取到的 URL 不正确: {real_url}")
+            return True
         except:
-            log("❌ 无法切入 Iframe 或找到元素")
-            
-    except Exception as e:
-        log(f"❌ 提取 URL 过程超时或出错: {e}")
+            pass
+    return False
+
+
+def extract_and_visit_exam_iframe(driver):
+    """提取真实URL跳转 - 增加重试机制"""
+    member_exam_url = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
+    
+    for attempt in range(3): # 这个步骤重试3次
+        log(f"🔗 尝试提取考试真实链接 ({attempt + 1}/3)...")
+        
         try:
-            driver.switch_to.default_content()
-        except: pass
+            driver.get(member_exam_url)
+            wait_for_page_load(driver)
+            
+            log("⏳ 等待页面及 Iframe 加载 (20s)...")
+            
+            # 等待 iframe 元素出现
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
+            
+            # 尝试切入 iframe 并等待按钮
+            if switch_to_exam_iframe(driver):
+                log("✅ 已切入 Iframe，等待[开始答题]按钮出现...")
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.XPATH, '//*[@id="startExamBtn"] | //span[contains(text(), "开始答题")]'))
+                )
+                log("✅ 按钮已出现，提取真实 URL...")
+                
+                real_url = driver.execute_script("return window.location.href;")
+                driver.switch_to.default_content()
+                
+                if real_url and "kaoshixing.com" in real_url:
+                    log(f"✅ 提取成功: {real_url}")
+                    log("🚀 跳转到真实考试页面 (顶层窗口)...")
+                    driver.get(real_url)
+                    wait_for_page_load(driver)
+                    return True
+                else:
+                    log(f"❌ 提取到的 URL 不正确: {real_url}")
+            else:
+                log("❌ 无法切入 Iframe")
+                
+        except Exception as e:
+            log(f"❌ 提取 URL 过程异常: {e}")
+            try:
+                driver.switch_to.default_content()
+            except: pass
+            
+        time.sleep(3) # 重试前等待
 
     return False
 
 
 def click_start_exam_button(driver):
-    """点击开始答题"""
+    """点击开始答题 (在顶层窗口)"""
     log(f"🔍 检查开始答题按钮...")
     xpaths = ['//*[@id="startExamBtn"]', '//button[contains(@class, "btn-primary")]//span[contains(text(), "开始答题")]', '//span[contains(text(), "开始答题")]']
     
@@ -401,10 +424,13 @@ def wait_for_exam_completion(driver, timeout_seconds=180):
             if 'exam_start' in current_url:
                 # ------------------- 调试代码 -------------------
                 try:
+                    # 检查插件是否向页面注入了标记 (前提是插件有做这个动作，如果没有，这个会是null)
+                    # 如果插件没有注入标记，这里会打印 None，不代表插件没运行，只代表没注入属性
                     ext_loaded = driver.execute_script("return document.documentElement.getAttribute('data-ext-loaded')")
-                    log(f"🧩 插件加载状态 (data-ext-loaded): {ext_loaded}")
-                except Exception as e:
-                    log(f"❌ 检查插件状态出错: {e}")
+                    if ext_loaded:
+                         log(f"🧩 插件加载状态 (data-ext-loaded): {ext_loaded}")
+                except Exception:
+                    pass
                 # -----------------------------------------------
 
                 if not exam_started:
@@ -482,7 +508,7 @@ def process_single_account(username, password, account_index, total_accounts):
             # 临时改为 1 次答题尝试
             for exam_retry in range(1):
                 log(f"📝 开始答题 ({exam_retry+1}/1)...")
-                # 1. 提取真实链接
+                # 1. 提取真实链接 (这里增加了3次重试)
                 if not extract_and_visit_exam_iframe(driver):
                     log("❌ 无法提取考试页面 URL")
                     continue
