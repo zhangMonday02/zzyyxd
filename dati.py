@@ -5,13 +5,12 @@ import json
 import subprocess
 import traceback
 import re
-import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # 尝试导入加密函数，假设 Utils.py 在同级目录
 try:
@@ -21,8 +20,6 @@ except ImportError:
     sys.exit(1)
 
 # 全局配置
-LOGIN_URL = "https://passport.jlc.com/api/cas/login/with-password"
-INIT_SESSION_URL = "https://passport.jlc.com/api/cas/login/get-init-session"
 MEMBER_URL = "https://member.jlc.com/"
 EXAM_PRE_URL = "https://member.jlc.com/integrated/exam-center/intermediary?examinationRelationUrl=https%3A%2F%2Fexam.kaoshixing.com%2Fexam%2Fbefore_answer_notice%2F1647581&examinationRelationId=1647581"
 
@@ -30,13 +27,15 @@ class JLCBot:
     def __init__(self):
         self.results = []
         self.driver = None
-        self.session = None
 
     def log(self, msg):
         print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
     def init_browser(self):
         """初始化 Selenium 浏览器 (无头模式 + 插件)"""
+        if self.driver:
+            return
+
         co = Options()
         co.add_argument("--headless=new") # 新版无头模式支持插件
         co.add_argument("--disable-gpu")
@@ -51,6 +50,7 @@ class JLCBot:
         
         self.driver = webdriver.Chrome(options=co)
         self.driver.set_page_load_timeout(30)
+        self.driver.set_script_timeout(30) # 设置JS执行超时时间
 
     def close_browser(self):
         if self.driver:
@@ -61,24 +61,36 @@ class JLCBot:
             self.driver = None
 
     def step_1_check_init_session(self):
-        """检查初始化会话"""
+        """在浏览器控制台检查初始化会话"""
         for _ in range(3):
             try:
-                # 必须先打开网页建立环境
-                if not self.driver:
-                    self.init_browser()
-                self.driver.get("https://passport.jlc.com")
+                self.init_browser()
+                # 必须先打开网页，才能在控制台发送同域请求
+                self.driver.get("https://passport.jlc.com/")
                 
-                # 使用 requests 发送 API 请求
-                headers = {"Content-Type": "application/json"}
-                data = {"appId": "JLC_PORTAL_PC", "clientType": "PC-WEB"}
+                # 使用 JS fetch 发送请求
+                # 使用 execute_async_script 以便获取异步 fetch 的结果
+                js_script = """
+                var callback = arguments[arguments.length - 1];
+                var url = "https://passport.jlc.com/api/cas/login/get-init-session";
+                var data = {"appId":"JLC_PORTAL_PC","clientType":"PC-WEB"};
                 
-                # 注意：这里使用独立的 requests session，验证连通性
-                r = requests.post(INIT_SESSION_URL, json=data, headers=headers, timeout=10)
-                res = r.json()
+                fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                })
+                .then(response => response.json())
+                .then(data => callback(data))
+                .catch(error => callback({"error": error.toString()}));
+                """
+                
+                res = self.driver.execute_async_script(js_script)
                 
                 if res.get("success") is True and res.get("code") == 200:
-                    self.log("Step 1: 初始化会话检查成功。")
+                    self.log("Step 1: 初始化会话检查成功 (Browser Fetch)。")
                     return True
                 else:
                     self.log(f"Step 1: 初始化响应异常: {res}")
@@ -111,22 +123,15 @@ class JLCBot:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     self.log("Step 2: AliV3min.py 运行超时 (3分钟)。")
-                    # 打印已有日志
-                    if process.stdout:
-                         print(process.stdout.read())
+                    if process.stdout: print(process.stdout.read())
                     continue
 
-                # 读取最后输出
                 output_lines = stdout.strip().split('\n')
                 ticket = None
                 
                 # 从后往前找 ticket
-                # 预期格式: 
-                # SUCCESS: Obtained CaptchaTicket:
-                # ae0fc2c6622c43fbaf782966f330d48b
                 if len(output_lines) >= 1:
                     last_line = output_lines[-1].strip()
-                    # 简单的校验：ticket通常是一串较长的字符
                     if len(last_line) > 20 and " " not in last_line:
                         ticket = last_line
                 
@@ -134,8 +139,7 @@ class JLCBot:
                     self.log(f"Step 2: 获取到 CaptchaTicket: {ticket}")
                     return ticket
                 else:
-                    self.log("Step 2: 未能从输出中解析出 Ticket。完整输出如下：")
-                    print(stdout)
+                    self.log("Step 2: 未能从输出中解析出 Ticket。")
             
             except Exception as e:
                 self.log(f"Step 2: 调用脚本异常: {e}")
@@ -143,34 +147,56 @@ class JLCBot:
         self.log("Step 2: 3次尝试获取验证码均失败，退出程序。")
         sys.exit(1)
 
-    def step_3_login_api(self, username, password, ticket):
-        """执行 API 登录"""
+    def step_3_login_browser_console(self, username, password, ticket):
+        """通过浏览器控制台发送登录请求"""
         try:
+            # Python端加密，因为JS端加密太复杂且 Utils.py 已经有了
             enc_user = pwdEncrypt(username)
             enc_pwd = pwdEncrypt(password)
         except Exception as e:
             self.log(f"加密失败: {e}")
             return "RETRY"
 
-        payload = {
-            'username': enc_user,
-            'password': enc_pwd,
-            'isAutoLogin': False,
-            'captchaTicket': ticket
-        }
+        # 确保浏览器是打开的并且在 passport 域名下
+        if not self.driver:
+            self.init_browser()
         
-        headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
+        # 检查当前 URL，如果不是 passport.jlc.com，则跳转
+        # 这是为了解决跨域问题 (CORS)，必须在同源页面发送请求
+        if "passport.jlc.com" not in self.driver.current_url:
+            self.driver.get("https://passport.jlc.com/login")
 
         try:
-            self.session = requests.Session() # 创建新会话以保存 Cookies
-            resp = self.session.post(LOGIN_URL, json=payload, headers=headers, timeout=15)
-            res_json = resp.json()
+            # 构造 JS 代码
+            # 注意：这里直接将加密后的字符串和 ticket 拼接到 JS 中
+            js_script = """
+            var callback = arguments[arguments.length - 1];
+            var url = "https://passport.jlc.com/api/cas/login/with-password";
+            var payload = {
+                'username': '%s',
+                'password': '%s',
+                'isAutoLogin': false,
+                'captchaTicket': '%s'
+            };
             
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => response.json())
+            .then(data => callback(data))
+            .catch(error => callback({'error': error.toString()}));
+            """ % (enc_user, enc_pwd, ticket)
+
+            self.log("Step 3: 正在通过浏览器控制台发送登录请求...")
+            res_json = self.driver.execute_async_script(js_script)
+            
+            # 处理返回结果
             if res_json.get("success") is True and res_json.get("code") == 2017:
-                self.log("Step 3: API 登录成功。")
+                self.log("Step 3: 浏览器内登录成功 (Cookies已自动写入)。")
                 return "SUCCESS"
             
             if res_json.get("code") == 10208:
@@ -179,28 +205,17 @@ class JLCBot:
             
             self.log(f"Step 3: 登录返回未知状态: {res_json}")
             return "RETRY"
-            
+
         except Exception as e:
-            self.log(f"Step 3: 登录请求异常: {e}")
+            self.log(f"Step 3: 浏览器执行登录JS异常: {e}")
             return "RETRY"
 
     def step_5_verify_login(self):
         """在浏览器中验证登录"""
         for _ in range(3):
             try:
-                # 关键：将 requests 的 cookie 同步到 selenium
-                # 必须先访问该域名的页面才能设置 cookie
-                self.driver.get("https://passport.jlc.com/404") 
-                
-                # 清除旧 cookie 并添加新 cookie
-                self.driver.delete_all_cookies()
-                for cookie in self.session.cookies:
-                    self.driver.add_cookie({
-                        'name': cookie.name,
-                        'value': cookie.value,
-                        'domain': cookie.domain if cookie.domain else '.jlc.com',
-                        'path': cookie.path if cookie.path else '/'
-                    })
+                # 关键修改：因为 Step 3 是在浏览器里登录的，Cookies 已经在浏览器里了
+                # 不需要再做任何 Cookie 同步操作，直接打开目标网页即可
                 
                 self.log("Step 5: 打开会员中心...")
                 self.driver.get(MEMBER_URL)
@@ -214,7 +229,6 @@ class JLCBot:
                 # 检测客编
                 page_source = self.driver.page_source
                 if "客编" in page_source:
-                    # 尝试提取客编打印一下
                     match = re.search(r'客编\s*([A-Z0-9]+)', page_source)
                     code = match.group(1) if match else "Unknown"
                     self.log(f"Step 5: 验证登录成功，客编: {code}")
@@ -231,23 +245,20 @@ class JLCBot:
 
     def step_7_start_exam(self):
         """打开考试页面并点击开始"""
-        # 刷新/寻找按钮逻辑 (最多3次)
         for i in range(3):
             try:
                 self.log(f"Step 7: 进入考试页面 (第 {i+1} 次)...")
                 self.driver.get(EXAM_PRE_URL)
                 
-                # 等待页面稳定 (检测按钮出现)
                 try:
                     start_btn = WebDriverWait(self.driver, 15).until(
                         EC.presence_of_element_located((By.ID, "startExamBtn"))
                     )
-                    # 点击开始
                     self.driver.execute_script("arguments[0].click();", start_btn)
                     self.log("Step 7: 点击了开始答题按钮。")
                     return True
                 except TimeoutException:
-                    self.log(f"Step 7: 未找到开始按钮。当前标题: {self.driver.title}, URL: {self.driver.current_url}")
+                    self.log(f"Step 7: 未找到开始按钮。标题: {self.driver.title}")
                     self.driver.refresh()
                     time.sleep(3)
             except Exception as e:
@@ -259,51 +270,44 @@ class JLCBot:
         """等待插件答题并检查分数"""
         start_time = time.time()
         
-        # 这里的逻辑是：点击开始后，等待重定向 -> 试卷页(插件运行) -> 重定向 -> 分数页
-        # 我们轮询检查是否有分数元素
-        
         while time.time() - start_time < 180: # 3分钟超时
             try:
-                # 检查是否出现分数
                 score_elements = self.driver.find_elements(By.CLASS_NAME, "score")
                 if score_elements:
                     score_text = score_elements[0].text
-                    self.log(f"Step 9: 检测到分数: {score_text}")
-                    return int(score_text)
+                    # 确保获取到的是数字
+                    if score_text.isdigit():
+                        self.log(f"Step 9: 检测到分数: {score_text}")
+                        return int(score_text)
                 
                 time.sleep(2)
             except Exception:
                 pass
         
         self.log("Step 9: 等待结果超时 (3分钟)。")
-        return -1 # 超时标记
+        return -1 
 
     def process_account(self, idx, username, password):
         """单个账号处理流程"""
         self.log(f"=== 开始处理账号 {idx+1}: {username} ===")
         
-        # 账号级重试逻辑 (Login Fail, Verify Fail, etc. result in account retry)
-        # 题目要求：
-        # 登录成功但返回错误 -> 跳过 (done inside step_3)
-        # 其他内容 -> 全流程重试 (最多3次)
-        # 验证登录失败 -> 全流程重试 (最多3次)
-        
         account_retry_count = 0
         while account_retry_count < 3:
             try:
-                # 1. 初始化会话
-                self.step_1_check_init_session() # 内部有3次重试，失败会Exit程序
+                # 1. 初始化会话 (Browser Fetch)
+                self.step_1_check_init_session() 
                 
                 # 2. 获取验证码
-                ticket = self.step_2_get_captcha() # 内部有3次重试，失败会Exit程序
+                ticket = self.step_2_get_captcha() 
                 
-                # 3. 登录 API
-                login_status = self.step_3_login_api(username, password, ticket)
+                # 3. 登录 (Browser Fetch)
+                # 注意：这一步执行完，浏览器就已经有登录状态了
+                login_status = self.step_3_login_browser_console(username, password, ticket)
                 
                 if login_status == "SKIP":
                     self.results.append(f"账号{idx+1}: 立创题库答题失败❌原因:账号或密码不正确")
                     self.close_browser()
-                    return # 跳过该账号
+                    return 
                 
                 if login_status == "RETRY":
                     account_retry_count += 1
@@ -311,40 +315,33 @@ class JLCBot:
                     self.close_browser()
                     continue
 
-                # 5. 验证登录 (需要浏览器环境)
-                if not self.driver:
-                    self.init_browser()
-                
+                # 5. 验证登录
+                # 因为已经在浏览器里了，直接跳转页面验证即可
                 if not self.step_5_verify_login():
                     account_retry_count += 1
                     self.log(f"登录验证失败，重试账号全流程 ({account_retry_count}/3)")
                     self.close_browser()
                     continue
 
-                # 账号登录验证成功，开始答题流程
-                # 答题流程如果失败（低于60分或超时），是从打开考试网页开始重试，而不是账号全流程
+                # 答题流程
                 exam_retry_count = 0
                 final_score = 0
                 exam_success = False
 
                 while exam_retry_count < 3:
-                    # 7. 打开考试页
                     if not self.step_7_start_exam():
-                        # 找不到按钮，跳过该账号
                         self.log("无法找到开始考试按钮，跳过该账号。")
                         break 
                     
-                    # 8 & 9. 等待结果
                     score = self.step_8_9_exam_process()
                     final_score = score
                     
                     if score >= 60:
                         exam_success = True
-                        break # 成功
+                        break 
                     else:
                         exam_retry_count += 1
                         self.log(f"答题失败 (分数: {score} 或 超时)，重试答题流程 ({exam_retry_count}/3)...")
-                        # 刷新一下或重新加载
                         time.sleep(2)
 
                 self.close_browser()
@@ -355,7 +352,7 @@ class JLCBot:
                     reason = f"最高得分{final_score}" if final_score != -1 else "脚本超过3分钟未执行成功"
                     self.results.append(f"账号{idx+1}: 立创题库答题失败❌原因:{reason}")
                 
-                return # 账号流程结束
+                return 
 
             except Exception as e:
                 self.log(f"账号处理发生未捕获异常: {e}")
@@ -363,7 +360,6 @@ class JLCBot:
                 account_retry_count += 1
                 self.close_browser()
         
-        # 超过3次全流程重试
         self.results.append(f"账号{idx+1}: 立创题库答题失败❌原因: 流程重试超过3次")
 
     def run(self):
@@ -387,10 +383,8 @@ class JLCBot:
 
         for i in range(len(users)):
             self.process_account(i, users[i], pwds[i])
-            # 确保浏览器关闭
             self.close_browser()
 
-        # 总结
         print("\n" + "="*30)
         print("运行总结")
         print("="*30)
